@@ -1,9 +1,14 @@
-# src/ch_client.py
 import time
 from typing import Dict, Iterable, List, Optional
+
 import requests
 
-from apps.esos_radar.esos_radar.config import CH_API_KEY, CH_ADVANCED_SEARCH_URL, CH_PAGE_SIZE, CH_MAX_RESULTS
+from radar_intel_core.config import (
+    CH_API_KEY,
+    CH_ADVANCED_SEARCH_URL,
+    CH_PAGE_SIZE,
+    CH_MAX_RESULTS,
+)
 
 
 class CompaniesHouseClient:
@@ -34,15 +39,10 @@ class CompaniesHouseClient:
         incorporated_to: Optional[str] = None,
         sic_codes: Optional[Iterable[str]] = None,
     ) -> Dict:
-        """
-        Single page call to /advanced-search/companies.[web:1]
-        Dates should be 'YYYY-MM-DD' if supplied.
-        """
         params: Dict[str, str] = {
             "start_index": str(start_index),
             "size": str(size),
         }
-
         if company_types:
             params["company_type"] = ",".join(company_types)
         if company_statuses:
@@ -64,10 +64,6 @@ class CompaniesHouseClient:
         max_results: int = CH_MAX_RESULTS,
         **kwargs,
     ) -> List[Dict]:
-        """
-        Page through advanced search up to max_results.
-        Returns raw 'items' list.
-        """
         results: List[Dict] = []
         start_index = 0
 

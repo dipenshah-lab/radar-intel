@@ -1,27 +1,20 @@
-# src/config.py
+# apps/esos_radar/esos_radar/config.py
+
 from pathlib import Path
-from dotenv import load_dotenv
-import os
 
-load_dotenv()
-
+# Base is the ESOS app folder (apps/esos_radar)
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 DATA_DIR = BASE_DIR / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 
+# Make sure folders exist
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
-CH_API_KEY = os.getenv("CH_API_KEY")
-
-if not CH_API_KEY:
-    raise RuntimeError("CH_API_KEY not set in .env")
-
-CH_BASE_URL = "https://api.company-information.service.gov.uk"
-CH_ADVANCED_SEARCH_URL = f"{CH_BASE_URL}/advanced-search/companies"
-
-# Reasonable defaults
-CH_PAGE_SIZE = 5000  # max allowed by advanced search[web:1]
-CH_MAX_RESULTS = 20000
+# File paths used by the ESOS scripts
+CH_INPUT = PROCESSED_DIR / "ch_large_candidates.csv"
+ESOS_NOTIFICATIONS_XLSX = RAW_DIR / "esos_phase3_notifications.xlsx"
+GAP_OUTPUT = PROCESSED_DIR / "esos_gap_candidates.csv"
+DAILY_WORK_OUTPUT = PROCESSED_DIR / "daily_work_list.csv"

@@ -1,27 +1,32 @@
-# src/fetch_companies.py
+# apps/esos_radar/esos_radar/fetch_companies.py
+
 import datetime as dt
-from pathlib import Path
+
 import pandas as pd
 
-from config import PROCESSED_DIR
 from radar_intel_core.clients.ch_client import CompaniesHouseClient
 from radar_intel_core.io.csv_utils import write_csv
+from .config import PROCESSED_DIR
 
 
 OUTPUT_PATH = PROCESSED_DIR / "ch_large_candidates.csv"
 
 
-def main():
+def main() -> None:
     client = CompaniesHouseClient()
 
     # Older than 5 years on today's date
     cutoff_date = (dt.date.today() - dt.timedelta(days=5 * 365)).isoformat()
 
+    print(f"Querying Companies House advanced search up to {cutoff_date}...")
+
     items = client.advanced_search_all(
-        company_types=["ltd", "plc"],
+        company_types=["ltd", "plc"],      # active LTD/PLC only
         company_statuses=["active"],
         incorporated_to=cutoff_date,
     )
+
+    print(f"Items returned: {len(items)}")
 
     if not items:
         print("No items returned from advanced search.")
@@ -29,7 +34,7 @@ def main():
 
     df = pd.json_normalize(items)
 
-    # Keep a compact but useful subset
+    # Keep a compact but useful subset of fields
     cols = [
         "company_number",
         "company_name",

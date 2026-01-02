@@ -1,17 +1,12 @@
-# src/daily_work_list.py
-from pathlib import Path
+# apps/esos_radar/esos_radar/daily_work_list.py
 import pandas as pd
 
-from config import PROCESSED_DIR
 from radar_intel_core.io.csv_utils import write_csv
-
-
-GAP_INPUT = PROCESSED_DIR / "esos_gap_candidates.csv"
-OUTPUT_PATH = PROCESSED_DIR / "daily_work_list.csv"
+from .config import GAP_OUTPUT, DAILY_WORK_OUTPUT
 
 
 def main(n: int = 20, random_state: int = 42):
-    df = pd.read_csv(GAP_INPUT)
+    df = pd.read_csv(GAP_OUTPUT)
 
     cols = [
         "company_number",
@@ -30,8 +25,8 @@ def main(n: int = 20, random_state: int = 42):
     else:
         sample = df_small.sample(n=n, random_state=random_state)
 
-    write_csv(sample, OUTPUT_PATH)
-    print(f"Wrote {len(sample)} companies to {OUTPUT_PATH}")
+    write_csv(sample, DAILY_WORK_OUTPUT)
+    print(f"Wrote {len(sample)} companies to {DAILY_WORK_OUTPUT}")
 
 
 if __name__ == "__main__":
