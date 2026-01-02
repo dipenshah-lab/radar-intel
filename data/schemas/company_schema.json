@@ -1,0 +1,10 @@
+{
+  "title": "Company",
+  "type": "object",
+  "properties": {
+    "company_number": {"type": "string"},
+    "name": {"type": "string"},
+    "country": {"type": "string"}
+  },
+  "required": ["company_number", "name", "country"]
+}
