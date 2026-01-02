@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build artefacts
+dist/
+build/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+
+# Local config
+apps/esos_radar/.env
+
+# Data
+data/raw/
+apps/esos_radar/data/raw/
