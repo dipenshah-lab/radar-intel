@@ -1,11 +1,19 @@
-# apps/esos_radar/esos_radar/daily_work_list.py
 import pandas as pd
 
 from radar_intel_core.io.csv_utils import write_csv
 from .config import GAP_OUTPUT, DAILY_WORK_OUTPUT
 
 
-def main(n: int = 20, random_state: int = 42):
+def main(n: int = 50, random_state: int = 42) -> None:
+    """
+    Build a small daily work list from the ESOS gap candidates.
+
+    - Reads GAP_OUTPUT (esos_gap_candidates.csv)
+    - Selects key columns for human / automated review
+    - Deduplicates by company_number
+    - Samples up to n companies at random for today's queue
+    - Writes DAILY_WORK_OUTPUT (daily_work_list.csv)
+    """
     df = pd.read_csv(GAP_OUTPUT)
 
     cols = [
