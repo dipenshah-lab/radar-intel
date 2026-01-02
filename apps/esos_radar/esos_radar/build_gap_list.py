@@ -6,7 +6,7 @@ import unicodedata
 import pandas as pd
 
 from config import RAW_DIR, PROCESSED_DIR
-from utils_csv import read_csv, write_csv
+from radar_intel_core.io.csv_utils import read_csv, write_csv
 
 
 CH_INPUT = PROCESSED_DIR / "ch_large_candidates.csv"

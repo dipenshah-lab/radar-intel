@@ -3,7 +3,7 @@ import time
 from typing import Dict, Iterable, List, Optional
 import requests
 
-from .config import CH_API_KEY, CH_ADVANCED_SEARCH_URL, CH_PAGE_SIZE, CH_MAX_RESULTS
+from apps.esos_radar.esos_radar.config import CH_API_KEY, CH_ADVANCED_SEARCH_URL, CH_PAGE_SIZE, CH_MAX_RESULTS
 
 
 class CompaniesHouseClient:

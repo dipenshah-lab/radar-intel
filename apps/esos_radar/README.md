@@ -1,2 +1,5 @@
-# esos-sniper
-Scripts and tooling to identify large UK companies likely non‑compliant with ESOS Phase 3 and export them as sales leads
+# ESOS Radar
+
+ESOS Radar is the first Radar Intel module and focuses on the UK Energy Savings Opportunity Scheme (ESOS).
+
+It takes organisations or portfolios as input, looks across public registries and flags late-filer risk and potential compliance gaps for the current ESOS phase.

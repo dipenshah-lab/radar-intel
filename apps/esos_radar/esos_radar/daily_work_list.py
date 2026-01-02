@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 
 from config import PROCESSED_DIR
-from utils_csv import write_csv
+from radar_intel_core.io.csv_utils import write_csv
 
 
 GAP_INPUT = PROCESSED_DIR / "esos_gap_candidates.csv"

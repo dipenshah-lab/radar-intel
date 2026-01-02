@@ -4,8 +4,8 @@ from pathlib import Path
 import pandas as pd
 
 from config import PROCESSED_DIR
-from ch_client import CompaniesHouseClient
-from utils_csv import write_csv
+from radar_intel_core.clients.ch_client import CompaniesHouseClient
+from radar_intel_core.io.csv_utils import write_csv
 
 
 OUTPUT_PATH = PROCESSED_DIR / "ch_large_candidates.csv"
