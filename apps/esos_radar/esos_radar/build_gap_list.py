@@ -23,7 +23,7 @@ def _normalise_postcode(pc: str) -> str:
     s = pc.strip().upper()
     # Collapse internal whitespace
     s = re.sub(r"\s+", " ", s)
-    # Outward code = everything before the last space
+    # Outward code = everything before last space
     parts = s.split(" ")
     if len(parts) >= 2:
         return parts[0]
