@@ -4,18 +4,22 @@ import os
 
 from dotenv import load_dotenv
 
-# Load env from the ESOS app if present
-# (adjust if you later have multiple apps with their own envs)
-APP_ROOT = Path(__file__).resolve().parents[2] / "apps" / "esos_radar"
-ENV_PATH = APP_ROOT / ".env"
+# PROJECT_ROOT = .../radar-intel
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# ESOS app root: .../radar-intel/apps/esos_radar
+ESOS_APP_ROOT = PROJECT_ROOT / "apps" / "esos_radar"
+ENV_PATH = ESOS_APP_ROOT / ".env"
+
 if ENV_PATH.exists():
     load_dotenv(ENV_PATH)
-
-BASE_DIR = Path(__file__).resolve().parents[1]
+else:
+    # Optional: helps debugging if path is wrong
+    print(f"Warning: .env not found at {ENV_PATH}")
 
 CH_API_KEY = os.getenv("CH_API_KEY")
 if not CH_API_KEY:
-    raise RuntimeError("CH_API_KEY not set in .env")
+    raise RuntimeError(f"CH_API_KEY not set in .env at {ENV_PATH}")
 
 CH_BASE_URL = "https://api.company-information.service.gov.uk"
 CH_ADVANCED_SEARCH_URL = f"{CH_BASE_URL}/advanced-search/companies"
