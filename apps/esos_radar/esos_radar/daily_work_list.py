@@ -1,17 +1,25 @@
+from __future__ import annotations
+
 import random
+from pathlib import Path
 
 import pandas as pd
 
-from radar_intel_core.io.csv_utils import write_csv
-from .config import PROCESSED_DIR, DAILY_WORK_OUTPUT
+from radar_intel_core.config import PROJECT_ROOT
 
+
+PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+DAILY_WORK_OUTPUT = PROCESSED_DIR / "daily_work_list.csv"
 ENRICHED_HIGH_INPUT = PROCESSED_DIR / "daily_work_enriched_high.csv"
 
 
+def write_csv(df: pd.DataFrame, path: Path | str) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+
+
 def main(n: int = 50, random_state: int | None = None) -> None:
-    """
-    Build a rotating daily work list from high-priority ESOS gap candidates.
-    """
     df = pd.read_csv(ENRICHED_HIGH_INPUT)
 
     cols = [

@@ -1,93 +1,67 @@
+from __future__ import annotations
+
 import time
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
 
-from radar_intel_core.config import (
-    CH_API_KEY,
-    CH_ADVANCED_SEARCH_URL,
-    CH_BASE_URL,          # make sure this is in config
-    CH_PAGE_SIZE,
-    CH_MAX_RESULTS,
-)
+from radar_intel_core.config import CH_API_KEY, CH_BASE_URL
 
 
 class CompaniesHouseClient:
-    def __init__(self, api_key: str = CH_API_KEY, rate_limit_per_sec: float = 10.0):
-        self.api_key = api_key
-        self.session = requests.Session()
-        self.session.auth = (self.api_key, "")
-        self.min_interval = 1.0 / rate_limit_per_sec
+    """
+    Minimal Companies House client for ESOS Radar use-cases.
+    Wraps the public data API with a simple GET helper and a
+    dedicated company profile method. [web:19][web:10]
+    """
 
-    def _get(self, url: str, params: Optional[Dict] = None) -> Dict:
-        start = time.time()
-        resp = self.session.get(url, params=params, timeout=30)
-        elapsed = time.time() - start
-        if elapsed < self.min_interval:
-            time.sleep(self.min_interval - elapsed)
-        resp.raise_for_status()
-        return resp.json()
-
-    def advanced_search_page(
+    def __init__(
         self,
-        start_index: int = 0,
-        size: int = CH_PAGE_SIZE,
-        *,
-        company_types: Optional[Iterable[str]] = None,
-        company_statuses: Optional[Iterable[str]] = None,
-        location: Optional[str] = None,
-        incorporated_from: Optional[str] = None,
-        incorporated_to: Optional[str] = None,
-        sic_codes: Optional[Iterable[str]] = None,
-    ) -> Dict:
-        params: Dict[str, str] = {
-            "start_index": str(start_index),
-            "size": str(size),
-        }
-        if company_types:
-            params["company_type"] = ",".join(company_types)
-        if company_statuses:
-            params["company_status"] = ",".join(company_statuses)
-        if location:
-            params["location"] = location
-        if incorporated_from:
-            params["incorporated_from"] = incorporated_from
-        if incorporated_to:
-            params["incorporated_to"] = incorporated_to
-        if sic_codes:
-            params["sic_codes"] = ",".join(sic_codes)
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: int = 10,
+        backoff_seconds: float = 0.5,
+        max_retries: int = 3,
+    ) -> None:
+        self.api_key = api_key or CH_API_KEY
+        self.base_url = (base_url or CH_BASE_URL).rstrip("/")
+        self.timeout = timeout
+        self.backoff_seconds = backoff_seconds
+        self.max_retries = max_retries
 
-        return self._get(CH_ADVANCED_SEARCH_URL, params=params)
-
-    def advanced_search_all(
-        self,
-        *,
-        max_results: int = CH_MAX_RESULTS,
-        **kwargs,
-    ) -> List[Dict]:
-        results: List[Dict] = []
-        start_index = 0
-
-        while True:
-            page = self.advanced_search_page(start_index=start_index, **kwargs)
-            items = page.get("items", [])
-            results.extend(items)
-
-            if len(results) >= max_results:
-                return results[:max_results]
-
-            returned = len(items)
-            total_results = page.get("total_results", 0)
-            if returned == 0 or start_index + returned >= total_results:
-                break
-
-            start_index += returned
-
-        return results
-
-    def get_company_profile(self, company_number: str) -> Dict:
+    def _get(self, url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
-        Wrapper for GET /company/{company_number}.
+        Internal GET with basic retry/backoff and API key auth.
+        Returns parsed JSON (dict) or {} on hard failure. [web:19]
         """
-        url = f"{CH_BASE_URL}/company/{company_number}"
+        auth = (self.api_key, "")
+        for attempt in range(self.max_retries):
+            try:
+                resp = requests.get(
+                    url,
+                    params=params,
+                    auth=auth,
+                    timeout=self.timeout,
+                )
+                if resp.status_code == 200:
+                    try:
+                        return resp.json()
+                    except ValueError:
+                        return {}
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    return {}
+            except requests.RequestException:
+                pass
+
+            if attempt < self.max_retries - 1:
+                time.sleep(self.backoff_seconds)
+
+        return {}
+
+    def get_company_profile(self, company_number: str) -> Dict[str, Any]:
+        """
+        Fetch a company profile from Companies House:
+        GET /company/{company_number}. [web:21][web:10]
+        """
+        url = f"{self.base_url}/company/{company_number}"
         return self._get(url, params=None)
