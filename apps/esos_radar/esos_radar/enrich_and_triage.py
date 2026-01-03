@@ -289,8 +289,8 @@ def enrich_and_score(
     gap_path = Path(gap_csv)
     df = pd.read_csv(gap_path)
 
-    # TEMP: limit to a random sample while testing to get leads quickly.
-    df = df.sample(n=min(2000, len(df)), random_state=42)
+    # Process full gap list (no sampling)
+    # df = df.sample(n=min(2000, len(df)), random_state=42)
 
     client = CompaniesHouseClient()
 
