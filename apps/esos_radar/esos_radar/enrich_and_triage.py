@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -12,10 +12,8 @@ from radar_intel_core.config import PROJECT_ROOT
 
 # ---------- Local config for ESOS Radar ----------
 
-# Where enriched and high-priority CSVs will be written.
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 
-# ESOS Phase 3 workbook – actual file you confirmed.
 ESOS_WORKBOOK_PATH = (
     PROJECT_ROOT
     / "apps"
@@ -25,7 +23,6 @@ ESOS_WORKBOOK_PATH = (
     / "esos_phase3_notifications.xlsx"
 )
 
-# Where the ESOS gap list currently lives.
 GAP_INPUT = (
     PROJECT_ROOT
     / "apps"
@@ -150,9 +147,8 @@ def derive_signals(profile: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 def extract_parent_fields(profile: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """
-    Best-efforts extraction of parent name/postcode from CH profile.
-
-    Uses foreign_company_details for UK branches of overseas companies. [web:21]
+    Best-efforts extraction of parent name/postcode from CH profile
+    using foreign_company_details for UK branches of overseas companies.
     """
     if not profile:
         return {"parent_name": None, "parent_postcode": None}
@@ -216,11 +212,11 @@ def score_row(row: pd.Series) -> int:
     elif accounts_type in SMALL_TYPES and is_group_like:
         score += 0
 
-    # Recency / compliance behaviour
-    if has_recent_accounts and not accounts_overdue:
+    # Recency / compliance behaviour: stronger penalty for overdue
+    if accounts_overdue:
+        score -= 2
+    elif has_recent_accounts:
         score += 1
-    elif accounts_overdue:
-        score -= 1
 
     # Group‑like
     if is_group_like:
@@ -253,11 +249,13 @@ def is_uk_country(val: Optional[str]) -> bool:
     )
 
 
-def load_esos_match_keys(workbook_path: Path | str) -> Set[str]:
+def load_esos_match_keys_and_direct_hits(
+    workbook_path: Path | str,
+) -> Tuple[Set[str], Set[str]]:
     """
-    Load ESOS Responsible undertaking sheet and return a set of match_keys
-    (normalised name + '|' + outward_postcode) for direct and parent checks.
-    Uses 'Organisation name' and 'Organisation address - Postcode' columns. [file:55]
+    Returns:
+      - all ESOS match_keys (Organisation name + outward postcode)
+      - set of company_numbers that appear in the ESOS sheet (direct responsibles).
     """
     wb_path = Path(workbook_path)
     df_esos = read_excel(wb_path, sheet_name="Responsible Undertaking")
@@ -269,7 +267,17 @@ def load_esos_match_keys(workbook_path: Path | str) -> Set[str]:
     df_esos["outward_pc"] = df_esos[pc_col].astype(str).apply(_normalise_postcode)
     df_esos["match_key"] = df_esos["name_norm"] + "|" + df_esos["outward_pc"]
 
-    return set(df_esos["match_key"].dropna().astype(str))
+    if "Company registration number" in df_esos.columns:
+        esos_direct = set(
+            df_esos["Company registration number"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+        )
+    else:
+        esos_direct = set()
+
+    return set(df_esos["match_key"].dropna().astype(str)), esos_direct
 
 
 def enrich_and_score(
@@ -282,13 +290,16 @@ def enrich_and_score(
     df = pd.read_csv(gap_path)
 
     # TEMP: limit to a random sample while testing to get leads quickly.
-    df = df.sample(n=min(300, len(df)), random_state=42)
+    df = df.sample(n=min(2000, len(df)), random_state=42)
 
     client = CompaniesHouseClient()
 
     esos_keys: Set[str] = set()
+    esos_direct_numbers: Set[str] = set()
     if esos_workbook is not None:
-        esos_keys = load_esos_match_keys(esos_workbook)
+        esos_keys, esos_direct_numbers = load_esos_match_keys_and_direct_hits(
+            esos_workbook,
+        )
 
     accounts_types: List[Optional[str]] = []
     last_made_ups: List[Optional[str]] = []
@@ -326,12 +337,15 @@ def enrich_and_score(
         sic_codes_norm = ";".join(normalise_sic_codes(sic_codes_raw))
         sic_codes_list.append(sic_codes_norm)
 
+        # Group-like heuristic
         name = str(row.get("company_name") or "")
         accounts_type_lower = (signals["accounts_type"] or "").lower()
+        name_lower = name.lower()
+
         group_like = False
         if "group" in accounts_type_lower:
             group_like = True
-        elif "holdings" in name.lower() or "group" in name.lower():
+        elif any(tok in name_lower for tok in ["holdings", "group", "plc", "limited partnership"]):
             group_like = True
         elif isinstance(sic_codes_raw, list) and len(sic_codes_raw) > 1:
             group_like = True
@@ -376,6 +390,12 @@ def enrich_and_score(
     df["sector"] = df["primary_sic"].apply(map_sic_to_sector)
     df["esos_score"] = df.apply(score_row, axis=1)
 
+    # Direct ESOS responsibles (definitely large, already notified)
+    df["in_esos_direct"] = df["company_number"].astype(str).isin(esos_direct_numbers)
+
+    # Company status normalisation for filtering
+    df["company_status_lower"] = df["company_status"].fillna("").str.lower()
+
     df.sort_values(
         ["esos_score", "company_number"],
         ascending=[False, True],
@@ -384,9 +404,21 @@ def enrich_and_score(
 
     write_csv(df, output_full)
 
+    # ---------- High-priority pool filter ----------
+
     df["accounts_type_lower"] = df["accounts_type"].fillna("").str.lower()
-    non_micro_mask = ~df["accounts_type_lower"].isin(["micro-entity", "dormant"])
-    score_mask = df["esos_score"] >= 2
+
+    # Exclude micro/dormant/small-exemption entirely
+    non_micro_mask = ~df["accounts_type_lower"].isin(
+        ["micro-entity", "dormant", "total-exemption-small"]
+    )
+
+    # Only clearly large account types count as "preferred"
+    preferred_types = {"full", "group", "large"}
+    preferred_mask = df["accounts_type_lower"].isin(preferred_types)
+
+    # Score threshold for high list (stricter)
+    score_mask = df["esos_score"] >= 4
 
     df["is_uk"] = df["country"].apply(is_uk_country)
     uk_mask = df["is_uk"]
@@ -401,12 +433,42 @@ def enrich_and_score(
         & (~df["is_group_like"])
     )
 
+    direct_esos_mask = ~df.get(
+        "in_esos_direct",
+        pd.Series(False, index=df.index),
+    ).astype(bool)
+
+    # Broad bad-status filter: drop dissolved / insolvency / strike-off etc.
+    bad_status_tokens = [
+        "proposal to strike off",
+        "dissolved",
+        "liquidation",
+        "receivership",
+        "administration",
+        "insolvency",
+        "voluntary arrangement",
+        "converted/closed",
+        "removed",
+    ]
+    bad_status_mask = df["company_status_lower"].apply(
+        lambda s: any(tok in s for tok in bad_status_tokens)
+    )
+    good_status_mask = ~bad_status_mask
+
+    # ESOS-fit: core sectors only
+    core_sectors = {"Industrial", "Buildings", "Transport"}
+    sector_mask = df["sector"].isin(core_sectors)
+
     high_df = df[
         score_mask
         & non_micro_mask
+        & preferred_mask
         & uk_mask
         & parent_mask
         & young_solo_mask
+        & direct_esos_mask
+        & good_status_mask
+        & sector_mask
     ].copy()
 
     write_csv(high_df, output_high)
