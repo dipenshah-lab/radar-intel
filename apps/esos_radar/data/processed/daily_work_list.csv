@@ -1,51 +1,16 @@
-company_number,company_name,address_line_1,address_line_2,locality,postal_code,country
-SC037439,WILLIAM V. FLEMING & COMPANY LIMITED,Dalziel House,7 Claremont Terrace,Glasgow,G3 7XR,
-06324935,CASEY MANCHESTER LIMITED,28 Bury New Road,Whitefield,Manchester,M45 7FJ,
-11055610,DIRECT TO SOURCE LTD,Hollymount Barn,Glewstone,Ross-On-Wye,HR9 6AN,United Kingdom
-11804301,HHS ELECTRICAL LIMITED,102 Newthorpe Common,Newthorpe,Nottingham,NG16 2EH,England
-08800582,RADHA KRISHNA AGS LTD,Rex House,354 Ballards Lane,London,N12 0DD,England
-12356357,PRIMA NURSERY LTD,White City Community Centre,India Way,London,W12 7QT,England
-07199508,786 SECURITY SERVICES LTD,105 Howard Avenue,,Slough,SL2 1LB,England
-08514974,WEST END GARAGE (WOLSINGHAM) LTD,3 Hope Street House,Hope Street,Crook,DL15 9HU,England
-11317160,DENDROBIUM ADVANCED TECHNOLOGIES LIMITED,2 Toomers Wharf,Canal Walk,Newbury,RG14 1DY,England
-08955629,RENFUL SYSTEMS LIMITED,5 North End Road,,London,NW11 7RJ,
-08065601,ADVANCED METALCRAFT LIMITED,"Units 14/15 Francis Way Francis Way, Bowthorpe Employment Area",,Norwich,NR5 9JA,England
-11549170,DEREK MURRAY FORMWORK LTD,Flat 6 36 Sefton Park Road,,Bristol,BS7 9AJ,England
-NI620386,BRANNOCK TRADING LIMITED,6 Brannock Meadows,Poyntzpass,Newry,BT35 6UD,Northern Ireland
-SC628849,ABNA CONSULTANCY LIMITED,2 Taylor Place,Flat 24/8,Glasgow,G4 0PA,Scotland
-SC490891,OBAN FISH COMPANY LTD,Smoke House,Kilmore,Oban,PA34 4XT,
-00700529,WINEMAKERS CHOICE LIMITED,Sabmiller House,Church Street West,Woking,GU21 6HS,United Kingdom
-11374585,PAINTING CLASSIC CARS LIMITED,Unit 2 Birch Close,,Eastbourne,BN23 6PE,England
-00840500,TUNLEY PROPERTIES LIMITED,40 Fleet Street,,Swindon,SN1 1RE,England
-12042485,RP CONTRACTING LIMITED,5 Moelyn Mews,,Harrow,HA1 2RD,United Kingdom
-11631290,S.D FAIR SHIPPING LTD,17 Rothesay Terrace,,Northampton,NN2 7ER,United Kingdom
-11766390,WRS GROUP LTD,9 Cockleton Lane,Gurnard,Cowes,PO31 8JE,England
-SC471241,BIBBLE BAR SILVERBURN LIMITED,Bibble Milkshake,Unit 42/1 Hardengreen Business Park,Eskbank,EH22 3NU,Scotland
-SC535394,DI & EV LTD,37 Broad Street,,Peterhead,AB42 1JB,United Kingdom
-09734017,DEAN NELSON FABRICATIONS LTD,28 Hothfield Drive,,Appleby-In-Westmorland,CA16 6HJ,England
-SC644794,TINY HOMES SCOTLAND LTD,20 Lora View,North Connel,Oban,PA37 1RR,Scotland
-SC593054,PEPPERSTAWN LTD,268 Birkhall Parade,,Aberdeen,AB16 5RA,Scotland
-05449087,THE GLASS CENTRE (BASINGSTOKE) LIMITED,Unit 3 Bear Court Amrstrong Road,Daneshill East,Basingstoke,RG24 8QT,
-SC203352,DEBI GLIORI LIMITED,17 Letham Mains Holdings,Haddington,East Lothian,EH41 4NW,
-SC632180,KYLE 1 ENTERPRISE LTD,42 Nithsdale Road,,Glasgow,G41 2AN,Scotland
-SC468415,GALLERY ART MARKETING LTD,1 Woodside Ind. Est. Main Street,Glenluce,Newton Stewart,DG8 0PL,
-10726507,A C TEK-SOL LTD,Carreg Y Bedmon,Llanfairynghornwy,Holyhead,LL65 4LY,Wales
-09844568,GET SOFTWARE LTD,10 Brownrigg Crescent,,Bracknell,RG12 2PZ,United Kingdom
-NI668027,CAUSEWAY FITNESS LIMITED,8 Riverside Park North,,Coleraine,BT51 3GE,Northern Ireland
-10938999,TREW HOLDINGS LTD,4 Low Moor Road,,Lincoln,LN6 3JY,United Kingdom
-08584305,VICKY EASTON CONSULTING LIMITED,58 Kelham Hall Drive,Wheatley,Oxford,OX33 1YB,
-12326630,CONTINENTAL BUSINESS AND SERVICES LTD,30 Lonsdale Road,,Nottingham,NG7 3DU,England
-12387679,TOP SHEET CLADDING LIMITED,Equitable House 55,Pellon Lane,Halifax,HX1 5SP,United Kingdom
-SC571479,COPELAND JOINERY LTD,22 Highfield Place,,Irvine,KA11 1BW,Scotland
-SC532958,CMS JOINERY LTD,50 George Street,,Dunoon,PA23 8BW,Scotland
-NI626414,MJL WORKFORCE ENGAGEMENT SERVICES LTD,70 Cavanoneill Road,Pomeroy,Dungannon,BT70 2SH,Northern Ireland
-10768167,EURO ASIA BUSINESS LTD,"C/O Shafi & Co Accountants, Nida House, Ground Floor","60 Sutton Street, Shadwell",London,E1 0AX,United Kingdom
-10651001,AGIE&KATIE LTD,12 St. Johns Square,,Stoke-On-Trent,ST6 3AJ,England
-12439353,SAIGON BAR AND GRILL LTD,203 Petts Wood Road,Petts Wood,Orpington,BR5 1LA,England
-12457116,MEAH LOGISTICS LTD,39 Moorton Avenue,,Manchester,M19 0NQ,England
-11909774,THE TETTENHALL FISH BAR LTD,9 High Street,Tettenhall,Wolverhampton,WV6 8QS,England
-SC607047,EM FOOD DISTRIBUTION LTD,154 Reid Street,,Glasgow,G40 4EN,Scotland
-11759722,JURBAN LTD,46 Morris Road,Ribbleton,Preston,PR2 6BQ,United Kingdom
-SC034143,CLYDE PIPEWORKS LIMITED,280 Kirkintilloch Road,Bishopbriggs,Glasgow,,
-11824337,AU FUSION LTD,Daisyfield Business Centre Appleby Street,Unit 309,Blackburn,BB1 3BL,England
-03872416,MEDIA INSURANCE BROKERS INTERNATIONAL LIMITED,One,Creechurch Place,London,EC3A 5AF,United Kingdom
+company_number,company_name,address_line_1,address_line_2,locality,postal_code,country,sector,accounts_type,esos_score
+08065601,ADVANCED METALCRAFT LIMITED,"Units 14/15 Francis Way Francis Way, Bowthorpe Employment Area",,Norwich,NR5 9JA,England,Industrial,total-exemption-full,5
+11766390,WRS GROUP LTD,9 Cockleton Lane,Gurnard,Cowes,PO31 8JE,England,Buildings,micro-entity,5
+10938999,TREW HOLDINGS LTD,4 Low Moor Road,,Lincoln,LN6 3JY,United Kingdom,Buildings,,4
+11055610,DIRECT TO SOURCE LTD,Hollymount Barn,Glewstone,Ross-On-Wye,HR9 6AN,United Kingdom,Other,total-exemption-full,4
+11804301,HHS ELECTRICAL LIMITED,102 Newthorpe Common,Newthorpe,Nottingham,NG16 2EH,England,Buildings,total-exemption-full,4
+00840500,TUNLEY PROPERTIES LIMITED,40 Fleet Street,,Swindon,SN1 1RE,England,Buildings,total-exemption-full,3
+03872416,MEDIA INSURANCE BROKERS INTERNATIONAL LIMITED,One,Creechurch Place,London,EC3A 5AF,United Kingdom,Other,small,3
+08955629,RENFUL SYSTEMS LIMITED,5 North End Road,,London,NW11 7RJ,,Other,total-exemption-full,3
+SC203352,DEBI GLIORI LIMITED,17 Letham Mains Holdings,Haddington,East Lothian,EH41 4NW,,Other,total-exemption-full,3
+00700529,WINEMAKERS CHOICE LIMITED,Sabmiller House,Church Street West,Woking,GU21 6HS,United Kingdom,Other,total-exemption-full,2
+12326630,CONTINENTAL BUSINESS AND SERVICES LTD,30 Lonsdale Road,,Nottingham,NG7 3DU,England,Buildings,total-exemption-full,2
+12387679,TOP SHEET CLADDING LIMITED,Equitable House 55,Pellon Lane,Halifax,HX1 5SP,United Kingdom,Buildings,total-exemption-full,2
+NI620386,BRANNOCK TRADING LIMITED,6 Brannock Meadows,Poyntzpass,Newry,BT35 6UD,Northern Ireland,Buildings,unaudited-abridged,2
+SC490891,OBAN FISH COMPANY LTD,Smoke House,Kilmore,Oban,PA34 4XT,,Industrial,total-exemption-full,2
+SC593054,PEPPERSTAWN LTD,268 Birkhall Parade,,Aberdeen,AB16 5RA,Scotland,Other,full,2

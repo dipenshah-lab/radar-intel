@@ -6,6 +6,7 @@ import requests
 from radar_intel_core.config import (
     CH_API_KEY,
     CH_ADVANCED_SEARCH_URL,
+    CH_BASE_URL,          # make sure this is in config
     CH_PAGE_SIZE,
     CH_MAX_RESULTS,
 )
@@ -18,7 +19,7 @@ class CompaniesHouseClient:
         self.session.auth = (self.api_key, "")
         self.min_interval = 1.0 / rate_limit_per_sec
 
-    def _get(self, url: str, params: Dict) -> Dict:
+    def _get(self, url: str, params: Optional[Dict] = None) -> Dict:
         start = time.time()
         resp = self.session.get(url, params=params, timeout=30)
         elapsed = time.time() - start
@@ -83,3 +84,10 @@ class CompaniesHouseClient:
             start_index += returned
 
         return results
+
+    def get_company_profile(self, company_number: str) -> Dict:
+        """
+        Wrapper for GET /company/{company_number}.
+        """
+        url = f"{CH_BASE_URL}/company/{company_number}"
+        return self._get(url, params=None)
