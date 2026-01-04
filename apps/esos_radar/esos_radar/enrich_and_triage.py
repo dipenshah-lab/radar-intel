@@ -417,7 +417,7 @@ def enrich_and_score(
     preferred_types = {"full", "group", "large"}
     preferred_mask = df["accounts_type_lower"].isin(preferred_types)
 
-    # Score threshold for high list (stricter)
+    # Score threshold for high list
     score_mask = df["esos_score"] >= 4
 
     df["is_uk"] = df["country"].apply(is_uk_country)
