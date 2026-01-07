@@ -10,6 +10,8 @@ Filters:
 - Recent accounts (within 18 months)
 - Holding company detection (financial test + <50 employees)
 - Group deduplication (identical financials = same group)
+- Address-based group deduplication (same postcode + similar name patterns)
+- Investment/SPV name pattern detection
 
 Usage:
     python -m apps.esos_radar.esos_radar.pipeline.stage5_apply_hygiene \
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -65,14 +68,28 @@ UK_JURISDICTIONS = [
 MAX_ACCOUNTS_AGE_DAYS = 540  # ~18 months
 
 # Holding company detection thresholds
-HOLDING_COMPANY_MAX_EMPLOYEES = 50  # If <50 employees but qualified via financial test, likely holding co
+HOLDING_COMPANY_MAX_EMPLOYEES = 50
+
+# Name patterns suggesting holding/investment vehicles
+HOLDING_PATTERNS = [
+    r'\bholdings?\b',
+    r'\binvestments?\b',
+    r'\bbidco\b',
+    r'\btopco\b',
+    r'\bholdco\b',
+    r'\bnewco\b',
+    r'\bspv\b',
+    r'\bopco\b',
+    r'\bacquisitions?\b',
+]
+
+HOLDING_PATTERN_RE = re.compile('|'.join(HOLDING_PATTERNS), re.IGNORECASE)
 
 
 def is_bad_status(status: Optional[str]) -> bool:
     """Check if company status indicates inactive/problematic."""
     if not status or pd.isna(status):
         return False
-
     status_lower = str(status).lower()
     return any(bad in status_lower for bad in EXCLUDE_STATUSES)
 
@@ -80,8 +97,7 @@ def is_bad_status(status: Optional[str]) -> bool:
 def is_uk_jurisdiction(jurisdiction: Optional[str]) -> bool:
     """Check if jurisdiction is UK."""
     if not jurisdiction or pd.isna(jurisdiction):
-        return True  # Assume UK if not specified
-
+        return True
     jurisdiction_lower = str(jurisdiction).lower().replace(" ", "-")
     return any(uk in jurisdiction_lower for uk in UK_JURISDICTIONS)
 
@@ -89,10 +105,8 @@ def is_uk_jurisdiction(jurisdiction: Optional[str]) -> bool:
 def is_accounts_recent(accounts_date: Optional[str]) -> bool:
     """Check if accounts are within acceptable age."""
     if not accounts_date or pd.isna(accounts_date):
-        return True  # Can't determine, give benefit of doubt
-
+        return True
     try:
-        # Handle various date formats
         date_str = str(accounts_date)[:10]
         if date_str and len(date_str) >= 10:
             acc_date = date.fromisoformat(date_str)
@@ -100,108 +114,224 @@ def is_accounts_recent(accounts_date: Optional[str]) -> bool:
             return acc_date >= cutoff
         return True
     except ValueError:
-        return True  # Can't parse, give benefit of doubt
+        return True
 
 
 def is_likely_holding_company(row: pd.Series) -> bool:
-    """
-    Detect likely holding companies that aren't real ESOS targets.
-
-    Pattern: Qualified via FINANCIAL_TEST but has very few employees.
-    These are typically SPVs, holding companies, or intercompany vehicles
-    that have large balance sheets but no operational activity.
-
-    Examples from the data:
-    - NIANTIC INTERNATIONAL LIMITED: 3 employees, £701m turnover
-    - DEMATIC GROUP LIMITED: 4 employees, £144m turnover
-    - KARAN RETAIL LTD: 39 employees, £195m turnover
-    """
+    """Detect likely holding companies (financial test + few employees)."""
     qualification_route = row.get("qualification_route", "")
     employees = row.get("employees")
-
-    # Only flag if qualified via financial test
     if qualification_route != "FINANCIAL_TEST":
         return False
-
-    # If employees is null/missing, can't determine - keep it
     if pd.isna(employees):
         return False
-
-    # If very few employees despite large financials, likely holding company
     return employees < HOLDING_COMPANY_MAX_EMPLOYEES
+
+
+def has_holding_name_pattern(company_name: Optional[str]) -> bool:
+    """Check if company name suggests a holding/investment vehicle."""
+    if not company_name or pd.isna(company_name):
+        return False
+    return bool(HOLDING_PATTERN_RE.search(company_name))
+
+
+def extract_postcode(address: Optional[str]) -> Optional[str]:
+    """Extract postcode from address string."""
+    if not address or pd.isna(address):
+        return None
+    postcode_pattern = r'([A-Z]{1,2}[0-9][0-9A-Z]?\s*[0-9][A-Z]{2})'
+    match = re.search(postcode_pattern, str(address).upper())
+    if match:
+        return match.group(1).replace(" ", "")
+    return None
+
+
+def extract_base_name(company_name: Optional[str]) -> str:
+    """Extract base company name for grouping."""
+    if not company_name or pd.isna(company_name):
+        return ""
+
+    name = str(company_name).upper()
+
+    suffixes = [
+        r'\s+PLC$', r'\s+LLP$', r'\s+LP$', r'\s+LIMITED$', r'\s+LTD\.?$',
+        r'\s+HOLDINGS?$', r'\s+INVESTMENTS?$', r'\s+GROUP$', r'\s+SERVICES?$',
+        r'\s+\(UK\)$', r'\s+UK$', r'\s+\d+$', r'\s+OPCO$', r'\s+BIDCO$',
+        r'\s+TOPCO$', r'\s+HOLDCO$', r'\s+NEWCO$',
+    ]
+
+    for suffix in suffixes:
+        name = re.sub(suffix, '', name)
+
+    name = re.sub(r'[^\w\s]', '', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+
+    return name
 
 
 def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
     """
     Identify companies that are likely in the same corporate group.
 
-    Pattern: Multiple companies with identical turnover AND balance sheet
-    are almost certainly filing consolidated/mirrored accounts.
-
-    Examples from the data:
-    - PWC Holdco 1 Limited & PWC Newco Limited: both £28.2m turnover, £45.6m balance
-    - Hamburg Bidco & Hamburg Topco: both £49.6m turnover, £26.8m balance
-
-    Returns dataframe with 'duplicate_group_id' and 'is_group_primary' columns.
+    Method 1: Identical turnover AND balance sheet
+    Method 2: Same postcode + similar name patterns (if address available)
+    Method 3: Identical employees AND same postcode (if address available)
     """
     df = df.copy()
 
-    # Create a key from turnover + balance sheet (rounded to avoid float issues)
+    # Check if we have address data
+    has_address = "registered_address" in df.columns
+
+    # Extract postcodes for address-based matching (if column exists)
+    if has_address:
+        df["_postcode"] = df["registered_address"].apply(extract_postcode)
+    else:
+        df["_postcode"] = None
+        logger.info("  Note: No registered_address column - skipping address-based deduplication")
+
+    df["_base_name"] = df["company_name"].apply(extract_base_name)
+
+    # Initialize group tracking
+    df["duplicate_group_id"] = None
+    df["is_group_primary"] = True
+    df["group_reason"] = None
+
+    group_counter = 0
+    processed_indices = set()
+
+    # =========================================================================
+    # Method 1: Identical financials (turnover + balance sheet)
+    # =========================================================================
     def make_financial_key(row):
         turnover = row.get("turnover")
         balance = row.get("balance_sheet")
-
-        # Both must be present and non-zero for matching
         if pd.isna(turnover) or pd.isna(balance):
             return None
         if turnover == 0 and balance == 0:
             return None
-
-        # Round to nearest 1000 to handle minor variations
         t_rounded = round(float(turnover) / 1000)
         b_rounded = round(float(balance) / 1000)
-
-        return f"{t_rounded}_{b_rounded}"
+        return f"fin_{t_rounded}_{b_rounded}"
 
     df["_financial_key"] = df.apply(make_financial_key, axis=1)
 
-    # Find duplicates (same financial key appears multiple times)
-    key_counts = df["_financial_key"].value_counts()
-    duplicate_keys = set(key_counts[key_counts > 1].index) - {None}
+    financial_key_counts = df["_financial_key"].value_counts()
+    duplicate_financial_keys = set(financial_key_counts[financial_key_counts > 1].index) - {None}
 
-    # Assign group IDs
-    group_id_map = {key: i + 1 for i, key in enumerate(sorted(duplicate_keys))}
+    for key in duplicate_financial_keys:
+        group_counter += 1
+        mask = df["_financial_key"] == key
+        indices = df[mask].index.tolist()
 
-    def get_group_id(key):
-        if key is None or key not in duplicate_keys:
-            return None
-        return group_id_map[key]
-
-    df["duplicate_group_id"] = df["_financial_key"].apply(get_group_id)
-
-    # Mark one company per group as primary (highest employees, or first alphabetically)
-    df["is_group_primary"] = True  # Default to primary
-
-    for group_id in df["duplicate_group_id"].dropna().unique():
-        group_mask = df["duplicate_group_id"] == group_id
-        group_df = df[group_mask].copy()
-
-        # Sort by employees (desc), then company name (asc) to pick primary
-        group_df = group_df.sort_values(
-            ["employees", "company_name"],
-            ascending=[False, True],
-            na_position="last"
-        )
-
-        # First one is primary, rest are not
+        group_df = df.loc[indices].sort_values("employees", ascending=False, na_position="last")
         primary_idx = group_df.index[0]
-        secondary_indices = group_df.index[1:]
 
-        df.loc[secondary_indices, "is_group_primary"] = False
+        for idx in indices:
+            df.loc[idx, "duplicate_group_id"] = group_counter
+            df.loc[idx, "group_reason"] = "identical_financials"
+            if idx != primary_idx:
+                df.loc[idx, "is_group_primary"] = False
+            processed_indices.add(idx)
 
-    # Clean up temp column
-    df = df.drop(columns=["_financial_key"])
+    # =========================================================================
+    # Method 2 & 3: Address-based (only if we have addresses)
+    # =========================================================================
+    if has_address:
+        postcode_groups = df[df["_postcode"].notna()].groupby("_postcode")
 
+        # Method 2: Same postcode + similar base name
+        for postcode, group in postcode_groups:
+            if len(group) < 2:
+                continue
+
+            unprocessed = [idx for idx in group.index if idx not in processed_indices]
+            if len(unprocessed) < 2:
+                continue
+
+            base_names = group.loc[unprocessed, "_base_name"].tolist()
+            indices = group.loc[unprocessed].index.tolist()
+
+            name_clusters = {}
+            for idx, base_name in zip(indices, base_names):
+                if not base_name:
+                    continue
+                words = base_name.split()
+                if len(words) >= 1:
+                    cluster_key = " ".join(words[:2])
+                    if cluster_key not in name_clusters:
+                        name_clusters[cluster_key] = []
+                    name_clusters[cluster_key].append(idx)
+
+            for cluster_key, cluster_indices in name_clusters.items():
+                if len(cluster_indices) < 2:
+                    continue
+
+                already_grouped = [idx for idx in cluster_indices if idx in processed_indices]
+                if already_grouped:
+                    continue
+
+                group_counter += 1
+
+                cluster_df = df.loc[cluster_indices].copy()
+                cluster_df["_has_holding_name"] = cluster_df["company_name"].apply(has_holding_name_pattern)
+                cluster_df = cluster_df.sort_values(
+                    ["_has_holding_name", "employees"],
+                    ascending=[True, False],
+                    na_position="last"
+                )
+                primary_idx = cluster_df.index[0]
+
+                for idx in cluster_indices:
+                    df.loc[idx, "duplicate_group_id"] = group_counter
+                    df.loc[idx, "group_reason"] = "same_postcode_similar_name"
+                    if idx != primary_idx:
+                        df.loc[idx, "is_group_primary"] = False
+                    processed_indices.add(idx)
+
+        # Method 3: Same postcode + identical employees
+        for postcode, group in postcode_groups:
+            if len(group) < 2:
+                continue
+
+            unprocessed = [idx for idx in group.index if idx not in processed_indices]
+            if len(unprocessed) < 2:
+                continue
+
+            emp_groups = group.loc[unprocessed].groupby("employees")
+
+            for emp_count, emp_group in emp_groups:
+                if pd.isna(emp_count) or len(emp_group) < 2:
+                    continue
+
+                emp_indices = emp_group.index.tolist()
+
+                group_counter += 1
+
+                emp_df = df.loc[emp_indices].copy()
+                emp_df["_has_holding_name"] = emp_df["company_name"].apply(has_holding_name_pattern)
+                emp_df = emp_df.sort_values(
+                    ["_has_holding_name", "company_name"],
+                    ascending=[True, True]
+                )
+                primary_idx = emp_df.index[0]
+
+                for idx in emp_indices:
+                    df.loc[idx, "duplicate_group_id"] = group_counter
+                    df.loc[idx, "group_reason"] = "same_postcode_same_employees"
+                    if idx != primary_idx:
+                        df.loc[idx, "is_group_primary"] = False
+                    processed_indices.add(idx)
+
+    # Clean up temp columns
+    df = df.drop(columns=["_financial_key", "_postcode", "_base_name"])
+
+    return df
+
+
+def flag_holding_name_patterns(df: pd.DataFrame) -> pd.DataFrame:
+    """Flag companies with holding/investment name patterns."""
+    df = df.copy()
+    df["has_holding_name"] = df["company_name"].apply(has_holding_name_pattern)
     return df
 
 
@@ -209,11 +339,7 @@ def enrich_with_profile_data(
     df: pd.DataFrame,
     client: CompaniesHouseClient,
 ) -> pd.DataFrame:
-    """
-    Enrich dataframe with company profile data from CH API.
-
-    Adds: company_status, jurisdiction, registered_office fields
-    """
+    """Enrich dataframe with company profile data from CH API."""
     logger.info(f"Enriching {len(df):,} companies with profile data...")
 
     statuses = []
@@ -259,20 +385,9 @@ def apply_hygiene_filters(
     skip_enrichment: bool = False,
     keep_holding_companies: bool = False,
     keep_group_duplicates: bool = False,
+    keep_holding_names: bool = False,
 ) -> int:
-    """
-    Apply hygiene filters to verified gaps.
-
-    Args:
-        input_path: Path to verified_gaps.csv
-        output_path: Path for output CSV
-        skip_enrichment: If True, skip API enrichment (for testing)
-        keep_holding_companies: If True, flag but don't remove holding companies
-        keep_group_duplicates: If True, flag but don't remove group duplicates
-
-    Returns:
-        Number of final leads
-    """
+    """Apply hygiene filters to verified gaps."""
     logger.info(f"Loading verified gaps from {input_path}")
     df = pd.read_csv(input_path, dtype={"company_number": str})
 
@@ -288,81 +403,96 @@ def apply_hygiene_filters(
         client = CompaniesHouseClient()
         df = enrich_with_profile_data(df, client)
 
-    # Track filter impacts
     filter_stats = {}
 
     # =========================================================================
-    # NEW FILTER: Holding company detection
+    # FILTER 1: Holding company detection (financial test + few employees)
     # =========================================================================
     df["is_likely_holding_company"] = df.apply(is_likely_holding_company, axis=1)
     holding_co_count = df["is_likely_holding_company"].sum()
-    filter_stats["holding_company"] = holding_co_count
+    filter_stats["holding_company_financial"] = holding_co_count
 
     if holding_co_count > 0:
-        logger.info(f"Detected {holding_co_count:,} likely holding companies:")
+        logger.info(f"Detected {holding_co_count:,} likely holding companies (financial test + <50 employees):")
         holding_cos = df[df["is_likely_holding_company"]][
             ["company_number", "company_name", "employees", "turnover", "balance_sheet"]
         ]
         for _, row in holding_cos.head(5).iterrows():
-            logger.info(
-                f"    {row['company_name']}: {row['employees']:.0f} employees, "
-                f"£{row['turnover']/1e6:.1f}m turnover"
-            )
+            turnover_str = f"£{row['turnover']/1e6:.1f}m turnover" if pd.notna(row['turnover']) else "no turnover"
+            logger.info(f"    {row['company_name']}: {row['employees']:.0f} employees, {turnover_str}")
 
     if not keep_holding_companies:
         df = df[~df["is_likely_holding_company"]]
-    else:
-        logger.info("  (Flagged but kept due to --keep-holding-companies)")
 
     # =========================================================================
-    # NEW FILTER: Group deduplication
+    # FILTER 2: Group deduplication
     # =========================================================================
     df = identify_duplicate_groups(df)
 
-    duplicate_groups = df[df["duplicate_group_id"].notna()]["duplicate_group_id"].nunique()
-    duplicate_count = (~df["is_group_primary"] & df["duplicate_group_id"].notna()).sum()
-    filter_stats["group_duplicates"] = duplicate_count
+    total_groups = df["duplicate_group_id"].dropna().nunique()
+    total_duplicates = (~df["is_group_primary"] & df["duplicate_group_id"].notna()).sum()
+    filter_stats["group_duplicates"] = total_duplicates
 
-    if duplicate_groups > 0:
-        logger.info(f"Detected {duplicate_groups:,} duplicate groups ({duplicate_count:,} secondary companies):")
-        # Show examples of each group
-        for group_id in df["duplicate_group_id"].dropna().unique()[:3]:
+    if total_groups > 0:
+        logger.info(f"Detected {total_groups:,} duplicate groups ({total_duplicates:,} secondary companies):")
+
+        # Count by reason
+        if "group_reason" in df.columns:
+            reason_counts = df[df["duplicate_group_id"].notna()].groupby("group_reason")["duplicate_group_id"].nunique()
+            for reason, count in reason_counts.items():
+                logger.info(f"  - {reason}: {count:,} groups")
+
+        # Show examples
+        for group_id in df["duplicate_group_id"].dropna().unique()[:5]:
             group_companies = df[df["duplicate_group_id"] == group_id][
-                ["company_name", "employees", "turnover", "is_group_primary"]
+                ["company_name", "employees", "is_group_primary", "group_reason"]
             ]
-            names = ", ".join(group_companies["company_name"].tolist())
-            logger.info(f"    Group {int(group_id)}: {names}")
+            names = group_companies["company_name"].tolist()
+            reason = group_companies["group_reason"].iloc[0] if "group_reason" in group_companies.columns else "unknown"
+            primary_mask = group_companies["is_group_primary"]
+            primary = group_companies[primary_mask]["company_name"].iloc[0] if any(primary_mask) else names[0]
+            logger.info(f"    Group {int(group_id)} ({reason}): {', '.join(names)}")
+            logger.info(f"      → Keeping: {primary}")
 
     if not keep_group_duplicates:
         pre_dedup = len(df)
         df = df[df["is_group_primary"] | df["duplicate_group_id"].isna()]
-        logger.info(f"  Removed {pre_dedup - len(df):,} duplicate group members")
-    else:
-        logger.info("  (Flagged but kept due to --keep-group-duplicates)")
+        removed = pre_dedup - len(df)
+        if removed > 0:
+            logger.info(f"  Removed {removed:,} duplicate group members")
+
+    # =========================================================================
+    # FILTER 3: Flag holding name patterns
+    # =========================================================================
+    df = flag_holding_name_patterns(df)
+    holding_name_count = df["has_holding_name"].sum()
+    filter_stats["holding_name_pattern"] = holding_name_count
+
+    if holding_name_count > 0:
+        logger.info(f"Flagged {holding_name_count:,} companies with holding/investment name patterns")
+        holding_names = df[df["has_holding_name"]]["company_name"].head(5).tolist()
+        logger.info(f"  Examples: {', '.join(holding_names)}")
 
     # =========================================================================
     # EXISTING FILTERS
     # =========================================================================
-
-    # Filter: Bad status
     if "company_status" in df.columns:
         bad_status_mask = df["company_status"].apply(is_bad_status)
         filter_stats["bad_status"] = bad_status_mask.sum()
         df = df[~bad_status_mask]
 
-    # Filter: Non-UK jurisdiction
     if "jurisdiction" in df.columns:
         non_uk_mask = ~df["jurisdiction"].apply(is_uk_jurisdiction)
         filter_stats["non_uk"] = non_uk_mask.sum()
         df = df[~non_uk_mask]
 
-    # Filter: Old accounts
     if "accounts_date" in df.columns:
         old_accounts_mask = ~df["accounts_date"].apply(is_accounts_recent)
         filter_stats["old_accounts"] = old_accounts_mask.sum()
         df = df[~old_accounts_mask]
 
-    # Log filter impacts
+    # Log summary
+    logger.info("=" * 50)
     logger.info("Filter summary:")
     for filter_name, count in filter_stats.items():
         logger.info(f"  - {filter_name}: {count:,}")
@@ -370,19 +500,28 @@ def apply_hygiene_filters(
     final_count = len(df)
     logger.info(f"Final Tier A+ leads: {final_count:,} ({100*final_count/initial_count:.1f}% of verified gaps)")
 
-    # Sort by employees (descending) for prioritisation
-    if "employees" in df.columns:
-        df = df.sort_values("employees", ascending=False, na_position="last")
+    # Sort: non-holding names first, then by employees
+    if "employees" in df.columns and "has_holding_name" in df.columns:
+        df = df.sort_values(
+            ["has_holding_name", "employees"],
+            ascending=[True, False],
+            na_position="last"
+        )
 
-    # Clean up internal columns before output
-    columns_to_drop = ["is_likely_holding_company", "is_group_primary"]
+    # Clean up internal columns
+    columns_to_drop = ["is_likely_holding_company", "is_group_primary", "group_reason"]
     df = df.drop(columns=[c for c in columns_to_drop if c in df.columns], errors="ignore")
 
-    # Ensure output directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     df.to_csv(output_path, index=False)
     logger.info(f"Wrote {len(df):,} Tier A+ leads to {output_path}")
+
+    # Output summary
+    if "has_holding_name" in df.columns:
+        clean_leads = (~df["has_holding_name"]).sum()
+        holding_leads = df["has_holding_name"].sum()
+        logger.info(f"  - Clean operational leads: {clean_leads:,}")
+        logger.info(f"  - Holding/investment pattern leads: {holding_leads:,}")
 
     return len(df)
 
@@ -391,31 +530,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Apply hygiene filters for final lead list"
     )
-    parser.add_argument(
-        "--input", "-i",
-        required=True,
-        help="Path to verified_gaps.csv",
-    )
-    parser.add_argument(
-        "--output", "-o",
-        required=True,
-        help="Path for output CSV",
-    )
-    parser.add_argument(
-        "--skip-enrichment",
-        action="store_true",
-        help="Skip API enrichment (assumes status/jurisdiction already present)",
-    )
-    parser.add_argument(
-        "--keep-holding-companies",
-        action="store_true",
-        help="Flag but don't remove likely holding companies",
-    )
-    parser.add_argument(
-        "--keep-group-duplicates",
-        action="store_true",
-        help="Flag but don't remove duplicate group members",
-    )
+    parser.add_argument("--input", "-i", required=True, help="Path to verified_gaps.csv")
+    parser.add_argument("--output", "-o", required=True, help="Path for output CSV")
+    parser.add_argument("--skip-enrichment", action="store_true", help="Skip API enrichment")
+    parser.add_argument("--keep-holding-companies", action="store_true", help="Keep likely holding companies")
+    parser.add_argument("--keep-group-duplicates", action="store_true", help="Keep duplicate group members")
+    parser.add_argument("--keep-holding-names", action="store_true", help="Don't deprioritize holding names")
 
     args = parser.parse_args()
 
@@ -432,6 +552,7 @@ def main() -> None:
         skip_enrichment=args.skip_enrichment,
         keep_holding_companies=args.keep_holding_companies,
         keep_group_duplicates=args.keep_group_duplicates,
+        keep_holding_names=args.keep_holding_names,
     )
 
 
