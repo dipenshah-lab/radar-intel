@@ -17,8 +17,11 @@ reported as whole numbers.
 
 VALIDATION RULES (added to catch filing software bugs):
 1. Reject employee counts tagged with currency units (unitRef="GBP" etc.)
-2. Reject implausible balance sheet / employee ratios (< £500 per employee)
-3. Reject implausibly high employee counts (> 500,000)
+2. Reject employee counts with negative scale factors (indicates scaled-up display values)
+3. Reject values that look like years (2020-2030 range) - likely table headers
+4. Reject implausible balance sheet / employee ratios (< £500 per employee)
+5. Reject implausibly high employee counts (> 100,000 for single entity)
+6. Reject round numbers that look like salaries (>5000 and divisible by 1000)
 
 Usage:
     python -m apps.esos_radar.esos_radar.pipeline.stage1_extract_xbrl \
@@ -102,9 +105,19 @@ CURRENCY_UNIT_PATTERNS = {"GBP", "USD", "EUR", "ISO4217"}
 # A company can't realistically have less than ~£500 of net assets per employee
 MIN_BALANCE_SHEET_PER_EMPLOYEE = 500
 
-# Maximum plausible employee count for a single UK company
-# Even the largest UK employers (NHS, Tesco) have ~300-500k employees
-MAX_PLAUSIBLE_EMPLOYEES = 500_000
+# Maximum plausible employee count for a single UK company filing
+# Most large companies file group accounts, so single entity rarely exceeds 50k
+# Being conservative at 100k to catch obvious errors while allowing outliers
+MAX_PLAUSIBLE_EMPLOYEES = 100_000
+
+# Year range that likely indicates table headers, not employee counts
+# e.g., "2025" displayed as a year column header
+YEAR_MIN = 2015
+YEAR_MAX = 2035
+
+# Threshold above which round numbers (divisible by 1000) are likely salaries
+# e.g., 56000 is likely £56,000 salary, not 56,000 employees
+SALARY_LIKE_THRESHOLD = 5000
 
 
 # =============================================================================
@@ -115,13 +128,19 @@ MAX_PLAUSIBLE_EMPLOYEES = 500_000
 class ValidationStats:
     """Track validation rejections for reporting."""
     currency_unit_rejections: int = 0
+    negative_scale_rejections: int = 0
+    year_value_rejections: int = 0
     ratio_rejections: int = 0
     high_count_rejections: int = 0
+    salary_like_rejections: int = 0
 
     # Store examples for debugging (limit to avoid memory issues)
     currency_unit_examples: list[dict] = field(default_factory=list)
+    negative_scale_examples: list[dict] = field(default_factory=list)
+    year_value_examples: list[dict] = field(default_factory=list)
     ratio_examples: list[dict] = field(default_factory=list)
     high_count_examples: list[dict] = field(default_factory=list)
+    salary_like_examples: list[dict] = field(default_factory=list)
 
     max_examples: int = 10
 
@@ -132,6 +151,24 @@ class ValidationStats:
                 "company_number": company_number,
                 "value": value,
                 "unit_ref": unit_ref,
+            })
+
+    def add_negative_scale_rejection(self, company_number: str, value: float, scale: int):
+        self.negative_scale_rejections += 1
+        if len(self.negative_scale_examples) < self.max_examples:
+            self.negative_scale_examples.append({
+                "company_number": company_number,
+                "raw_value": value,
+                "scale": scale,
+                "actual_value": value * (10 ** scale),
+            })
+
+    def add_year_value_rejection(self, company_number: str, value: float):
+        self.year_value_rejections += 1
+        if len(self.year_value_examples) < self.max_examples:
+            self.year_value_examples.append({
+                "company_number": company_number,
+                "value": value,
             })
 
     def add_ratio_rejection(self, company_number: str, employees: float, balance_sheet: float):
@@ -152,9 +189,24 @@ class ValidationStats:
                 "value": value,
             })
 
+    def add_salary_like_rejection(self, company_number: str, value: float):
+        self.salary_like_rejections += 1
+        if len(self.salary_like_examples) < self.max_examples:
+            self.salary_like_examples.append({
+                "company_number": company_number,
+                "value": value,
+            })
+
     def log_summary(self):
         """Log a summary of validation rejections."""
-        total = self.currency_unit_rejections + self.ratio_rejections + self.high_count_rejections
+        total = (
+            self.currency_unit_rejections +
+            self.negative_scale_rejections +
+            self.year_value_rejections +
+            self.ratio_rejections +
+            self.high_count_rejections +
+            self.salary_like_rejections
+        )
 
         if total == 0:
             logger.info("Validation: No suspicious values rejected")
@@ -166,6 +218,21 @@ class ValidationStats:
             logger.info(f"  - Currency unit tagged (GBP/USD/EUR): {self.currency_unit_rejections:,}")
             for ex in self.currency_unit_examples[:3]:
                 logger.info(f"      Example: {ex['company_number']} had value {ex['value']:,.0f} with unit '{ex['unit_ref']}'")
+
+        if self.negative_scale_rejections > 0:
+            logger.info(f"  - Negative scale factor: {self.negative_scale_rejections:,}")
+            for ex in self.negative_scale_examples[:3]:
+                logger.info(f"      Example: {ex['company_number']} had raw value {ex['raw_value']:,.0f} with scale={ex['scale']} (actual: {ex['actual_value']:,.2f})")
+
+        if self.year_value_rejections > 0:
+            logger.info(f"  - Year-like value ({YEAR_MIN}-{YEAR_MAX}): {self.year_value_rejections:,}")
+            for ex in self.year_value_examples[:3]:
+                logger.info(f"      Example: {ex['company_number']} had value {ex['value']:,.0f}")
+
+        if self.salary_like_rejections > 0:
+            logger.info(f"  - Salary-like round number: {self.salary_like_rejections:,}")
+            for ex in self.salary_like_examples[:3]:
+                logger.info(f"      Example: {ex['company_number']} had value {ex['value']:,.0f}")
 
         if self.ratio_rejections > 0:
             logger.info(f"  - Implausible balance sheet ratio: {self.ratio_rejections:,}")
@@ -228,6 +295,33 @@ def is_currency_unit(unit_ref: str) -> bool:
     return False
 
 
+def is_year_value(value: float) -> bool:
+    """
+    Check if a value looks like a year (common in table headers).
+
+    e.g., "2025" used as a column header for the 2025 accounting year
+    can be incorrectly tagged as an employee count.
+    """
+    return YEAR_MIN <= value <= YEAR_MAX
+
+
+def is_salary_like(value: float) -> bool:
+    """
+    Check if a value looks like a salary amount rather than employee count.
+
+    High round numbers divisible by 1000 are suspicious when tagged as
+    employee counts. e.g., 56000 is more likely £56,000 salary than 56,000 employees.
+    """
+    if value < SALARY_LIKE_THRESHOLD:
+        return False
+
+    # Check if it's a round number (divisible by 1000)
+    if value % 1000 == 0:
+        return True
+
+    return False
+
+
 # =============================================================================
 # MAIN PARSER
 # =============================================================================
@@ -247,8 +341,11 @@ def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[
 
     VALIDATION RULES:
     1. Reject employee counts tagged with currency units (unitRef="GBP" etc.)
-    2. Reject implausible balance sheet / employee ratios (< £500 per employee)
-    3. Reject implausibly high employee counts (> 500,000)
+    2. Reject employee counts with negative scale factors
+    3. Reject values that look like years (2020-2030 range)
+    4. Reject salary-like round numbers (>5000 and divisible by 1000)
+    5. Reject implausible balance sheet / employee ratios (< £500 per employee)
+    6. Reject implausibly high employee counts (> 100,000)
 
     Args:
         content: Raw bytes of the iXBRL file
@@ -275,6 +372,8 @@ def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[
         # Track rejected employee value for validation stats
         rejected_employee_value = None
         rejected_employee_unit = None
+        rejected_employee_scale = None
+        rejection_reason = None
 
         # Iterate through all elements
         for elem in root.iter():
@@ -338,7 +437,7 @@ def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[
                         value = -value
 
                     # Employees - NEVER apply scale factor
-                    # Also validate unitRef to catch filing software bugs
+                    # Also validate to catch filing software bugs
                     if concept in EMPLOYEE_CONCEPTS and employees is None:
                         # VALIDATION RULE 1: Reject currency-tagged values
                         if is_currency_unit(unit_ref):
@@ -348,7 +447,42 @@ def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[
                             )
                             rejected_employee_value = value
                             rejected_employee_unit = unit_ref
+                            rejection_reason = "currency_unit"
                             # Don't set employees - skip this value
+
+                        # VALIDATION RULE 2: Reject negative scale factors
+                        # Negative scale means the raw value should be divided
+                        # This doesn't make sense for whole-person counts
+                        elif scale < 0:
+                            logger.debug(
+                                f"Rejecting employee count {value:,.0f} - "
+                                f"has negative scale={scale} (actual would be {value * (10**scale):,.2f})"
+                            )
+                            rejected_employee_value = value
+                            rejected_employee_scale = scale
+                            rejection_reason = "negative_scale"
+                            # Don't set employees - skip this value
+
+                        # VALIDATION RULE 3: Reject year-like values
+                        elif is_year_value(value):
+                            logger.debug(
+                                f"Rejecting employee count {value:,.0f} - "
+                                f"looks like a year (table header?)"
+                            )
+                            rejected_employee_value = value
+                            rejection_reason = "year_value"
+                            # Don't set employees - skip this value
+
+                        # VALIDATION RULE 4: Reject salary-like round numbers
+                        elif is_salary_like(value):
+                            logger.debug(
+                                f"Rejecting employee count {value:,.0f} - "
+                                f"looks like salary amount (round number > {SALARY_LIKE_THRESHOLD})"
+                            )
+                            rejected_employee_value = value
+                            rejection_reason = "salary_like"
+                            # Don't set employees - skip this value
+
                         else:
                             employees = value  # No scaling!
 
@@ -368,13 +502,26 @@ def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[
         if employees is None and turnover is None and balance_sheet is None:
             return None
 
-        # Track currency unit rejection if it happened
+        # Track validation rejections
         if track_validation and rejected_employee_value is not None:
-            validation_stats.add_currency_rejection(
-                company_number, rejected_employee_value, rejected_employee_unit
-            )
+            if rejection_reason == "currency_unit":
+                validation_stats.add_currency_rejection(
+                    company_number, rejected_employee_value, rejected_employee_unit or ""
+                )
+            elif rejection_reason == "negative_scale":
+                validation_stats.add_negative_scale_rejection(
+                    company_number, rejected_employee_value, rejected_employee_scale or 0
+                )
+            elif rejection_reason == "year_value":
+                validation_stats.add_year_value_rejection(
+                    company_number, rejected_employee_value
+                )
+            elif rejection_reason == "salary_like":
+                validation_stats.add_salary_like_rejection(
+                    company_number, rejected_employee_value
+                )
 
-        # VALIDATION RULE 2: Reject implausible balance sheet / employee ratios
+        # VALIDATION RULE 5: Reject implausible balance sheet / employee ratios
         if employees is not None and balance_sheet is not None and employees > 0:
             ratio = balance_sheet / employees
             if ratio < MIN_BALANCE_SHEET_PER_EMPLOYEE:
@@ -386,7 +533,7 @@ def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[
                     validation_stats.add_ratio_rejection(company_number, employees, balance_sheet)
                 employees = None  # Clear the suspicious employee value
 
-        # VALIDATION RULE 3: Reject implausibly high employee counts
+        # VALIDATION RULE 6: Reject implausibly high employee counts
         if employees is not None and employees > MAX_PLAUSIBLE_EMPLOYEES:
             logger.debug(
                 f"Rejecting {company_number}: employee count of {employees:,.0f} is implausibly high"
