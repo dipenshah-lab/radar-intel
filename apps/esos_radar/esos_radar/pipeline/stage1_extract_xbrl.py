@@ -15,6 +15,11 @@ IMPORTANT: The 'scale' attribute (e.g., scale="3" for thousands) should ONLY be 
 to monetary values (turnover, balance sheet), NOT to employee counts which are always
 reported as whole numbers.
 
+VALIDATION RULES (added to catch filing software bugs):
+1. Reject employee counts tagged with currency units (unitRef="GBP" etc.)
+2. Reject implausible balance sheet / employee ratios (< £500 per employee)
+3. Reject implausibly high employee counts (> 500,000)
+
 Usage:
     python -m apps.esos_radar.esos_radar.pipeline.stage1_extract_xbrl \
         --input data/raw/xbrl/Accounts_Monthly_Data-December2024.zip \
@@ -28,6 +33,7 @@ import logging
 import re
 import sys
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -40,6 +46,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# XBRL CONCEPT DEFINITIONS
+# =============================================================================
 
 # XBRL concept names (the part after the namespace prefix)
 # These appear in the 'name' attribute like "ns5:AverageNumberEmployeesDuringPeriod"
@@ -80,6 +90,102 @@ PERIOD_END_CONCEPTS = [
 ]
 
 
+# =============================================================================
+# VALIDATION CONSTANTS
+# =============================================================================
+
+# Currency codes that indicate monetary values, not counts
+# Some filing software incorrectly tags employee counts with GBP
+CURRENCY_UNIT_PATTERNS = {"GBP", "USD", "EUR", "ISO4217"}
+
+# Minimum plausible balance sheet per employee (£)
+# A company can't realistically have less than ~£500 of net assets per employee
+MIN_BALANCE_SHEET_PER_EMPLOYEE = 500
+
+# Maximum plausible employee count for a single UK company
+# Even the largest UK employers (NHS, Tesco) have ~300-500k employees
+MAX_PLAUSIBLE_EMPLOYEES = 500_000
+
+
+# =============================================================================
+# VALIDATION TRACKING
+# =============================================================================
+
+@dataclass
+class ValidationStats:
+    """Track validation rejections for reporting."""
+    currency_unit_rejections: int = 0
+    ratio_rejections: int = 0
+    high_count_rejections: int = 0
+
+    # Store examples for debugging (limit to avoid memory issues)
+    currency_unit_examples: list[dict] = field(default_factory=list)
+    ratio_examples: list[dict] = field(default_factory=list)
+    high_count_examples: list[dict] = field(default_factory=list)
+
+    max_examples: int = 10
+
+    def add_currency_rejection(self, company_number: str, value: float, unit_ref: str):
+        self.currency_unit_rejections += 1
+        if len(self.currency_unit_examples) < self.max_examples:
+            self.currency_unit_examples.append({
+                "company_number": company_number,
+                "value": value,
+                "unit_ref": unit_ref,
+            })
+
+    def add_ratio_rejection(self, company_number: str, employees: float, balance_sheet: float):
+        self.ratio_rejections += 1
+        if len(self.ratio_examples) < self.max_examples:
+            self.ratio_examples.append({
+                "company_number": company_number,
+                "employees": employees,
+                "balance_sheet": balance_sheet,
+                "ratio": balance_sheet / employees if employees > 0 else 0,
+            })
+
+    def add_high_count_rejection(self, company_number: str, value: float):
+        self.high_count_rejections += 1
+        if len(self.high_count_examples) < self.max_examples:
+            self.high_count_examples.append({
+                "company_number": company_number,
+                "value": value,
+            })
+
+    def log_summary(self):
+        """Log a summary of validation rejections."""
+        total = self.currency_unit_rejections + self.ratio_rejections + self.high_count_rejections
+
+        if total == 0:
+            logger.info("Validation: No suspicious values rejected")
+            return
+
+        logger.info(f"Validation rejected {total:,} suspicious employee values:")
+
+        if self.currency_unit_rejections > 0:
+            logger.info(f"  - Currency unit tagged (GBP/USD/EUR): {self.currency_unit_rejections:,}")
+            for ex in self.currency_unit_examples[:3]:
+                logger.info(f"      Example: {ex['company_number']} had value {ex['value']:,.0f} with unit '{ex['unit_ref']}'")
+
+        if self.ratio_rejections > 0:
+            logger.info(f"  - Implausible balance sheet ratio: {self.ratio_rejections:,}")
+            for ex in self.ratio_examples[:3]:
+                logger.info(f"      Example: {ex['company_number']} had {ex['employees']:,.0f} employees, £{ex['balance_sheet']:,.0f} balance sheet (£{ex['ratio']:,.0f}/employee)")
+
+        if self.high_count_rejections > 0:
+            logger.info(f"  - Implausibly high count (>{MAX_PLAUSIBLE_EMPLOYEES:,}): {self.high_count_rejections:,}")
+            for ex in self.high_count_examples[:3]:
+                logger.info(f"      Example: {ex['company_number']} had value {ex['value']:,.0f}")
+
+
+# Global validation stats (reset per extraction run)
+validation_stats = ValidationStats()
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
 def get_concept_name(full_name: str) -> str:
     """Extract concept name from full name like 'ns5:AverageNumberEmployeesDuringPeriod'."""
     if ":" in full_name:
@@ -99,7 +205,34 @@ def parse_numeric_value(text: str) -> Optional[float]:
         return None
 
 
-def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
+def is_currency_unit(unit_ref: str) -> bool:
+    """
+    Check if a unitRef indicates a currency (monetary value).
+
+    Valid employee count units: 'Pure', 'pure', 'Number', custom IDs like 'u4'
+    Invalid (currency): 'GBP', 'USD', 'iso4217:GBP', etc.
+
+    Some filing software incorrectly tags employee counts with GBP,
+    causing payroll costs to be parsed as headcounts.
+    """
+    if not unit_ref:
+        return False
+
+    unit_upper = unit_ref.upper()
+
+    # Check for any currency pattern
+    for pattern in CURRENCY_UNIT_PATTERNS:
+        if pattern in unit_upper:
+            return True
+
+    return False
+
+
+# =============================================================================
+# MAIN PARSER
+# =============================================================================
+
+def parse_ixbrl_file(content: bytes, track_validation: bool = True) -> Optional[dict[str, Any]]:
     """
     Parse an iXBRL file to extract financial data.
 
@@ -111,7 +244,21 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
 
     IMPORTANT: The 'scale' attribute is only applied to monetary values (turnover,
     balance sheet), NOT to employee counts which are always whole numbers.
+
+    VALIDATION RULES:
+    1. Reject employee counts tagged with currency units (unitRef="GBP" etc.)
+    2. Reject implausible balance sheet / employee ratios (< £500 per employee)
+    3. Reject implausibly high employee counts (> 500,000)
+
+    Args:
+        content: Raw bytes of the iXBRL file
+        track_validation: Whether to track validation stats (disable for testing)
+
+    Returns:
+        Dict with extracted data, or None if no valid data found
     """
+    global validation_stats
+
     try:
         # Parse as HTML since iXBRL is HTML-based
         root = etree.HTML(content)
@@ -124,6 +271,10 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
         turnover = None
         balance_sheet = None
         accounts_date = None
+
+        # Track rejected employee value for validation stats
+        rejected_employee_value = None
+        rejected_employee_unit = None
 
         # Iterate through all elements
         for elem in root.iter():
@@ -176,6 +327,9 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
                 # Check for sign attribute (negative values)
                 sign = elem.get("sign", "")
 
+                # Get unitRef for validation (lxml lowercases attributes)
+                unit_ref = elem.get("unitref", "")
+
                 value = parse_numeric_value(text)
 
                 if value is not None:
@@ -184,9 +338,19 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
                         value = -value
 
                     # Employees - NEVER apply scale factor
-                    # Employee counts are always reported as whole numbers
+                    # Also validate unitRef to catch filing software bugs
                     if concept in EMPLOYEE_CONCEPTS and employees is None:
-                        employees = value  # No scaling!
+                        # VALIDATION RULE 1: Reject currency-tagged values
+                        if is_currency_unit(unit_ref):
+                            logger.debug(
+                                f"Rejecting employee count {value:,.0f} - "
+                                f"tagged with currency unit '{unit_ref}'"
+                            )
+                            rejected_employee_value = value
+                            rejected_employee_unit = unit_ref
+                            # Don't set employees - skip this value
+                        else:
+                            employees = value  # No scaling!
 
                     # Turnover - apply scale (monetary values may use thousands/millions)
                     elif concept in TURNOVER_CONCEPTS and turnover is None:
@@ -201,6 +365,37 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
             return None
 
         # Must have at least some financial data
+        if employees is None and turnover is None and balance_sheet is None:
+            return None
+
+        # Track currency unit rejection if it happened
+        if track_validation and rejected_employee_value is not None:
+            validation_stats.add_currency_rejection(
+                company_number, rejected_employee_value, rejected_employee_unit
+            )
+
+        # VALIDATION RULE 2: Reject implausible balance sheet / employee ratios
+        if employees is not None and balance_sheet is not None and employees > 0:
+            ratio = balance_sheet / employees
+            if ratio < MIN_BALANCE_SHEET_PER_EMPLOYEE:
+                logger.debug(
+                    f"Rejecting {company_number}: balance sheet/employee ratio of £{ratio:,.0f} "
+                    f"is implausibly low (employees={employees:,.0f}, balance_sheet=£{balance_sheet:,.0f})"
+                )
+                if track_validation:
+                    validation_stats.add_ratio_rejection(company_number, employees, balance_sheet)
+                employees = None  # Clear the suspicious employee value
+
+        # VALIDATION RULE 3: Reject implausibly high employee counts
+        if employees is not None and employees > MAX_PLAUSIBLE_EMPLOYEES:
+            logger.debug(
+                f"Rejecting {company_number}: employee count of {employees:,.0f} is implausibly high"
+            )
+            if track_validation:
+                validation_stats.add_high_count_rejection(company_number, employees)
+            employees = None
+
+        # After validation, check again if we have any useful data
         if employees is None and turnover is None and balance_sheet is None:
             return None
 
@@ -255,6 +450,11 @@ def extract_from_zip(
     Returns:
         Number of companies successfully extracted
     """
+    global validation_stats
+
+    # Reset validation stats for this run
+    validation_stats = ValidationStats()
+
     logger.info(f"Processing local ZIP: {zip_path}")
 
     records: list[dict[str, Any]] = []
@@ -290,6 +490,9 @@ def extract_from_zip(
     logger.info(f"  - Skipped (no financial data): {skipped_no_data:,}")
     logger.info(f"  - Skipped (no company number): {skipped_no_company:,}")
 
+    # Log validation summary
+    validation_stats.log_summary()
+
     if not records:
         logger.warning("No records extracted!")
         return 0
@@ -319,17 +522,17 @@ def extract_from_zip(
     # Log sanity check for employee counts
     if has_employees > 0:
         emp_series = df["employees"].dropna()
-        logger.info("Employee count sanity check:")
+        logger.info("Employee count sanity check (after validation):")
         logger.info(f"  - Min: {emp_series.min():,.0f}")
         logger.info(f"  - Max: {emp_series.max():,.0f}")
         logger.info(f"  - Median: {emp_series.median():,.0f}")
         logger.info(f"  - Companies with 250+ employees: {(emp_series >= 250).sum():,}")
 
-        # Warn if max seems implausibly high
-        if emp_series.max() > 500_000:
+        # Warn if max seems implausibly high (shouldn't happen after validation)
+        if emp_series.max() > MAX_PLAUSIBLE_EMPLOYEES:
             logger.warning(
-                f"WARNING: Max employee count ({emp_series.max():,.0f}) seems implausibly high. "
-                "Check for scaling issues in source data."
+                f"WARNING: Max employee count ({emp_series.max():,.0f}) exceeds plausibility threshold. "
+                "Validation may have missed some cases."
             )
 
     return len(df)
