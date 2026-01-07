@@ -11,6 +11,10 @@ The Companies House iXBRL files use inline XBRL format where:
 
 Note: When parsed with lxml's HTML parser, tag names are lowercased.
 
+IMPORTANT: The 'scale' attribute (e.g., scale="3" for thousands) should ONLY be applied
+to monetary values (turnover, balance sheet), NOT to employee counts which are always
+reported as whole numbers.
+
 Usage:
     python -m apps.esos_radar.esos_radar.pipeline.stage1_extract_xbrl \
         --input data/raw/xbrl/Accounts_Monthly_Data-December2024.zip \
@@ -104,6 +108,9 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
 
     Note: lxml's HTML parser lowercases all tag names, so we look for
     "ix:nonnumeric" and "ix:nonfraction" (not camelCase).
+
+    IMPORTANT: The 'scale' attribute is only applied to monetary values (turnover,
+    balance sheet), NOT to employee counts which are always whole numbers.
     """
     try:
         # Parse as HTML since iXBRL is HTML-based
@@ -163,6 +170,7 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
                 text = text.strip()
 
                 # Check for scale attribute (e.g., scale="3" means thousands)
+                # NOTE: Only applied to MONETARY values, not employee counts
                 scale = int(elem.get("scale", "0"))
 
                 # Check for sign attribute (negative values)
@@ -171,24 +179,22 @@ def parse_ixbrl_file(content: bytes) -> Optional[dict[str, Any]]:
                 value = parse_numeric_value(text)
 
                 if value is not None:
-                    # Apply scale
-                    value = value * (10 ** scale)
-
-                    # Apply sign
+                    # Apply sign first (applies to all values)
                     if sign == "-":
                         value = -value
 
-                    # Employees
+                    # Employees - NEVER apply scale factor
+                    # Employee counts are always reported as whole numbers
                     if concept in EMPLOYEE_CONCEPTS and employees is None:
-                        employees = value
+                        employees = value  # No scaling!
 
-                    # Turnover
+                    # Turnover - apply scale (monetary values may use thousands/millions)
                     elif concept in TURNOVER_CONCEPTS and turnover is None:
-                        turnover = value
+                        turnover = value * (10 ** scale)
 
-                    # Balance sheet
+                    # Balance sheet - apply scale (monetary values may use thousands/millions)
                     elif concept in BALANCE_SHEET_CONCEPTS and balance_sheet is None:
-                        balance_sheet = value
+                        balance_sheet = value * (10 ** scale)
 
         # Must have company number
         if not company_number:
@@ -309,6 +315,22 @@ def extract_from_zip(
     logger.info(f"  - Employees: {has_employees:,} ({100*has_employees/len(df):.1f}%)")
     logger.info(f"  - Turnover: {has_turnover:,} ({100*has_turnover/len(df):.1f}%)")
     logger.info(f"  - Balance sheet: {has_balance:,} ({100*has_balance/len(df):.1f}%)")
+
+    # Log sanity check for employee counts
+    if has_employees > 0:
+        emp_series = df["employees"].dropna()
+        logger.info("Employee count sanity check:")
+        logger.info(f"  - Min: {emp_series.min():,.0f}")
+        logger.info(f"  - Max: {emp_series.max():,.0f}")
+        logger.info(f"  - Median: {emp_series.median():,.0f}")
+        logger.info(f"  - Companies with 250+ employees: {(emp_series >= 250).sum():,}")
+
+        # Warn if max seems implausibly high
+        if emp_series.max() > 500_000:
+            logger.warning(
+                f"WARNING: Max employee count ({emp_series.max():,.0f}) seems implausibly high. "
+                "Check for scaling issues in source data."
+            )
 
     return len(df)
 
