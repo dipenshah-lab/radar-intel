@@ -1,4 +1,17 @@
+# Core dependencies
 pandas>=2.0
 openpyxl>=3.1
 python-dotenv>=1.0
 requests>=2.31
+
+# XBRL parsing (GOV.UK official library)
+stream-read-xbrl>=0.0.42
+
+# XML parsing (stream-read-xbrl dependency)
+lxml>=5.0
+
+# Async HTTP for bulk downloads (optional, for future use)
+httpx>=0.27
+
+# Development
+pytest>=7.0

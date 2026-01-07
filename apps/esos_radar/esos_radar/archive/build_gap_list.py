@@ -5,7 +5,7 @@ import unicodedata
 import pandas as pd
 
 from radar_intel_core.io.csv_utils import read_csv, write_csv
-from .config import CH_INPUT, ESOS_NOTIFICATIONS_XLSX, GAP_OUTPUT
+from apps.esos_radar.esos_radar.config import CH_INPUT, ESOS_NOTIFICATIONS_XLSX, GAP_OUTPUT
 
 # ESOS Phase 3 workbook settings
 ESOS_SHEET = "Responsible Undertaking"

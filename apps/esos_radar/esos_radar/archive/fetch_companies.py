@@ -6,7 +6,7 @@ import pandas as pd
 
 from radar_intel_core.clients.ch_client import CompaniesHouseClient
 from radar_intel_core.io.csv_utils import write_csv
-from .config import PROCESSED_DIR
+from apps.esos_radar.esos_radar.config import PROCESSED_DIR
 
 
 OUTPUT_PATH = PROCESSED_DIR / "ch_large_candidates.csv"
