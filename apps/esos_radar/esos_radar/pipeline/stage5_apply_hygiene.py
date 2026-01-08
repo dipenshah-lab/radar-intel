@@ -10,6 +10,7 @@ Filters:
 - Recent accounts (within 18 months)
 - Holding company detection (financial test + <50 employees)
 - Group deduplication (identical financials = same group)
+- Name-based group deduplication (similar base name = same group)
 - Address-based group deduplication (same postcode + similar name patterns)
 - Investment/SPV name pattern detection
 
@@ -173,6 +174,7 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
     """
     Identify companies that are likely in the same corporate group.
 
+    Method 0: Similar base name (no address required) - NEW
     Method 1: Identical turnover AND balance sheet
     Method 2: Same postcode + similar name patterns (if address available)
     Method 3: Identical employees AND same postcode (if address available)
@@ -187,7 +189,7 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
         df["_postcode"] = df["registered_address"].apply(extract_postcode)
     else:
         df["_postcode"] = None
-        logger.info("  Note: No registered_address column - skipping address-based deduplication")
+        logger.info("  Note: No registered_address column - address-based deduplication will be skipped")
 
     df["_base_name"] = df["company_name"].apply(extract_base_name)
 
@@ -200,8 +202,55 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
     processed_indices = set()
 
     # =========================================================================
+    # Method 0: Similar base name (no address required)
+    # This catches group siblings like "Harbour Healthcare Ltd" and
+    # "Harbour Healthcare Holdings Ltd" without needing API data
+    # =========================================================================
+    logger.info("  Method 0: Checking for similar base names...")
+
+    # Group by base name
+    base_name_counts = df["_base_name"].value_counts()
+    duplicate_base_names = set(base_name_counts[base_name_counts > 1].index) - {""}
+
+    method_0_groups = 0
+    for base_name in duplicate_base_names:
+        if not base_name or len(base_name) < 3:  # Skip empty/tiny names
+            continue
+
+        mask = df["_base_name"] == base_name
+        indices = df[mask].index.tolist()
+
+        if len(indices) < 2:
+            continue
+
+        group_counter += 1
+        method_0_groups += 1
+
+        # Primary = most employees, non-holding name preferred
+        cluster_df = df.loc[indices].copy()
+        cluster_df["_has_holding_name"] = cluster_df["company_name"].apply(has_holding_name_pattern)
+        cluster_df = cluster_df.sort_values(
+            ["_has_holding_name", "employees"],
+            ascending=[True, False],
+            na_position="last"
+        )
+        primary_idx = cluster_df.index[0]
+
+        for idx in indices:
+            df.loc[idx, "duplicate_group_id"] = group_counter
+            df.loc[idx, "group_reason"] = "similar_base_name"
+            if idx != primary_idx:
+                df.loc[idx, "is_group_primary"] = False
+            processed_indices.add(idx)
+
+    if method_0_groups > 0:
+        logger.info(f"    Found {method_0_groups} groups via similar base name")
+
+    # =========================================================================
     # Method 1: Identical financials (turnover + balance sheet)
     # =========================================================================
+    logger.info("  Method 1: Checking for identical financials...")
+
     def make_financial_key(row):
         turnover = row.get("turnover")
         balance = row.get("balance_sheet")
@@ -218,26 +267,43 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
     financial_key_counts = df["_financial_key"].value_counts()
     duplicate_financial_keys = set(financial_key_counts[financial_key_counts > 1].index) - {None}
 
+    method_1_groups = 0
     for key in duplicate_financial_keys:
-        group_counter += 1
         mask = df["_financial_key"] == key
         indices = df[mask].index.tolist()
 
-        group_df = df.loc[indices].sort_values("employees", ascending=False, na_position="last")
+        # Skip if all already processed by Method 0
+        unprocessed = [idx for idx in indices if idx not in processed_indices]
+        if len(unprocessed) < 2:
+            continue
+
+        group_counter += 1
+        method_1_groups += 1
+
+        group_df = df.loc[unprocessed].sort_values("employees", ascending=False, na_position="last")
         primary_idx = group_df.index[0]
 
-        for idx in indices:
+        for idx in unprocessed:
             df.loc[idx, "duplicate_group_id"] = group_counter
             df.loc[idx, "group_reason"] = "identical_financials"
             if idx != primary_idx:
                 df.loc[idx, "is_group_primary"] = False
             processed_indices.add(idx)
 
+    if method_1_groups > 0:
+        logger.info(f"    Found {method_1_groups} groups via identical financials")
+
     # =========================================================================
     # Method 2 & 3: Address-based (only if we have addresses)
     # =========================================================================
     if has_address:
+        logger.info("  Method 2: Checking for same postcode + similar name...")
+        logger.info("  Method 3: Checking for same postcode + same employees...")
+
         postcode_groups = df[df["_postcode"].notna()].groupby("_postcode")
+
+        method_2_groups = 0
+        method_3_groups = 0
 
         # Method 2: Same postcode + similar base name
         for postcode, group in postcode_groups:
@@ -271,6 +337,7 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
                     continue
 
                 group_counter += 1
+                method_2_groups += 1
 
                 cluster_df = df.loc[cluster_indices].copy()
                 cluster_df["_has_holding_name"] = cluster_df["company_name"].apply(has_holding_name_pattern)
@@ -287,6 +354,9 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
                     if idx != primary_idx:
                         df.loc[idx, "is_group_primary"] = False
                     processed_indices.add(idx)
+
+        if method_2_groups > 0:
+            logger.info(f"    Found {method_2_groups} groups via same postcode + similar name")
 
         # Method 3: Same postcode + identical employees
         for postcode, group in postcode_groups:
@@ -306,6 +376,7 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
                 emp_indices = emp_group.index.tolist()
 
                 group_counter += 1
+                method_3_groups += 1
 
                 emp_df = df.loc[emp_indices].copy()
                 emp_df["_has_holding_name"] = emp_df["company_name"].apply(has_holding_name_pattern)
@@ -321,6 +392,9 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
                     if idx != primary_idx:
                         df.loc[idx, "is_group_primary"] = False
                     processed_indices.add(idx)
+
+        if method_3_groups > 0:
+            logger.info(f"    Found {method_3_groups} groups via same postcode + same employees")
 
     # Clean up temp columns
     df = df.drop(columns=["_financial_key", "_postcode", "_base_name"])
@@ -427,6 +501,7 @@ def apply_hygiene_filters(
     # =========================================================================
     # FILTER 2: Group deduplication
     # =========================================================================
+    logger.info("Running group deduplication...")
     df = identify_duplicate_groups(df)
 
     total_groups = df["duplicate_group_id"].dropna().nunique()
