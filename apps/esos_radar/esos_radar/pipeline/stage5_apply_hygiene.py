@@ -82,6 +82,7 @@ HOLDING_PATTERNS = [
     r'\bspv\b',
     r'\bopco\b',
     r'\bacquisitions?\b',
+    r'\bgroup\b',  # "GROUP" often indicates parent/holding entity
 ]
 
 HOLDING_PATTERN_RE = re.compile('|'.join(HOLDING_PATTERNS), re.IGNORECASE)
@@ -148,24 +149,96 @@ def extract_postcode(address: Optional[str]) -> Optional[str]:
 
 
 def extract_base_name(company_name: Optional[str]) -> str:
-    """Extract base company name for grouping."""
+    """
+    Extract base company name for grouping.
+
+    Aggressively strips:
+    - Legal suffixes (LTD, LIMITED, PLC, LLP, etc.)
+    - Corporate structure words (HOLDINGS, GROUP, INVESTMENTS, OPCO, etc.)
+    - Trailing numbers (1, 2, 3, etc.)
+    - Regional markers ((UK), UK, (NI), etc.)
+    - Common filler words (AND, SUBSIDIARY, SUBSIDIARIES, &)
+
+    Examples:
+        "COUNTRY COURT CARE HOMES 2 LIMITED" -> "COUNTRY COURT CARE HOMES"
+        "COUNTRY COURT CARE HOMES 3 OPCO LIMITED" -> "COUNTRY COURT CARE HOMES"
+        "EFS Global Limited" -> "EFS GLOBAL"
+        "EFS Investments Limited" -> "EFS"
+        "HARBOUR HEALTHCARE GROUP LIMITED" -> "HARBOUR HEALTHCARE"
+    """
     if not company_name or pd.isna(company_name):
         return ""
 
     name = str(company_name).upper()
 
-    suffixes = [
-        r'\s+PLC$', r'\s+LLP$', r'\s+LP$', r'\s+LIMITED$', r'\s+LTD\.?$',
-        r'\s+HOLDINGS?$', r'\s+INVESTMENTS?$', r'\s+GROUP$', r'\s+SERVICES?$',
-        r'\s+\(UK\)$', r'\s+UK$', r'\s+\d+$', r'\s+OPCO$', r'\s+BIDCO$',
-        r'\s+TOPCO$', r'\s+HOLDCO$', r'\s+NEWCO$',
+    # Round 0: Early cleanup of "& SUBSIDIARY" patterns (before punctuation removal)
+    name = re.sub(r'\s*&\s*SUBSIDIAR(Y|IES)', '', name)
+    name = re.sub(r'\s+AND\s+SUBSIDIAR(Y|IES)', '', name)
+
+    # Round 1: Strip legal entity suffixes (do multiple passes as they can stack)
+    legal_suffixes = [
+        r'\s+PLC$',
+        r'\s+LLP$',
+        r'\s+LP$',
+        r'\s+LIMITED$',
+        r'\s+LTD\.?$',
+        r'\s+INC\.?$',
+        r'\s+CORP\.?$',
     ]
 
-    for suffix in suffixes:
+    for _ in range(3):  # Multiple passes for stacked suffixes
+        for suffix in legal_suffixes:
+            name = re.sub(suffix, '', name)
+
+    # Round 2: Strip corporate structure words (anywhere, but be careful)
+    # These are stripped iteratively from the END to avoid over-stripping
+    structure_suffixes = [
+        r'\s+HOLDINGS?$',
+        r'\s+INVESTMENTS?$',
+        r'\s+GROUP$',
+        r'\s+SERVICES?$',
+        r'\s+OPCO$',
+        r'\s+BIDCO$',
+        r'\s+TOPCO$',
+        r'\s+HOLDCO$',
+        r'\s+NEWCO$',
+        r'\s+PARENT$',
+        r'\s+MIDCO$',
+    ]
+
+    for _ in range(3):  # Multiple passes
+        for suffix in structure_suffixes:
+            name = re.sub(suffix, '', name)
+
+    # Round 3: Strip regional/subsidiary markers
+    regional_suffixes = [
+        r'\s*\(UK\)$',
+        r'\s*\(NI\)$',
+        r'\s*\(GB\)$',
+        r'\s*\(SCOTLAND\)$',
+        r'\s*\(ENGLAND\)$',
+        r'\s*\(WALES\)$',
+        r'\s+UK$',
+        r'\s+NI$',
+        r'\s+GB$',
+    ]
+
+    for suffix in regional_suffixes:
         name = re.sub(suffix, '', name)
 
-    name = re.sub(r'[^\w\s]', '', name)
-    name = re.sub(r'\s+', ' ', name).strip()
+    # Round 4: Strip trailing numbers (e.g., "COMPANY 2", "COMPANY 3")
+    name = re.sub(r'\s+\d+$', '', name)
+
+    # Round 5: Clean up punctuation and whitespace
+    name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
+    name = re.sub(r'\s+', ' ', name).strip()  # Normalize whitespace
+
+    # Round 6: Final cleanup - strip any remaining structure words that might be exposed
+    for _ in range(2):
+        for suffix in structure_suffixes:
+            name = re.sub(suffix, '', name)
+
+    name = name.strip()
 
     return name
 
@@ -245,6 +318,179 @@ def identify_duplicate_groups(df: pd.DataFrame) -> pd.DataFrame:
 
     if method_0_groups > 0:
         logger.info(f"    Found {method_0_groups} groups via similar base name")
+
+    # =========================================================================
+    # Method 0b: Same postcode + same first word of base name
+    # This catches cases like "EFS Global" and "EFS Investments" at same address
+    # where base names differ but they're clearly the same group
+    # =========================================================================
+    if has_address:
+        logger.info("  Method 0b: Checking for same postcode + same first word...")
+
+        # Extract first word of base name for looser matching
+        df["_first_word"] = df["_base_name"].apply(
+            lambda x: x.split()[0] if x and len(x.split()) > 0 else ""
+        )
+
+        # Only consider companies with valid postcode and first word
+        valid_mask = df["_postcode"].notna() & (df["_first_word"].str.len() >= 2)
+
+        # Create composite key: postcode + first word
+        df["_postcode_firstword"] = None
+        df.loc[valid_mask, "_postcode_firstword"] = (
+            df.loc[valid_mask, "_postcode"] + "|" + df.loc[valid_mask, "_first_word"]
+        )
+
+        # Find duplicates
+        key_counts = df["_postcode_firstword"].value_counts()
+        duplicate_keys = set(key_counts[key_counts > 1].index) - {None}
+
+        method_0b_groups = 0
+        for key in duplicate_keys:
+            mask = df["_postcode_firstword"] == key
+            indices = df[mask].index.tolist()
+
+            # Skip if all already processed
+            unprocessed = [idx for idx in indices if idx not in processed_indices]
+            if len(unprocessed) < 2:
+                continue
+
+            group_counter += 1
+            method_0b_groups += 1
+
+            # Primary = most employees, non-holding name preferred
+            cluster_df = df.loc[unprocessed].copy()
+            cluster_df["_has_holding_name"] = cluster_df["company_name"].apply(has_holding_name_pattern)
+            cluster_df = cluster_df.sort_values(
+                ["_has_holding_name", "employees"],
+                ascending=[True, False],
+                na_position="last"
+            )
+            primary_idx = cluster_df.index[0]
+
+            for idx in unprocessed:
+                df.loc[idx, "duplicate_group_id"] = group_counter
+                df.loc[idx, "group_reason"] = "same_postcode_first_word"
+                if idx != primary_idx:
+                    df.loc[idx, "is_group_primary"] = False
+                processed_indices.add(idx)
+
+        if method_0b_groups > 0:
+            logger.info(f"    Found {method_0b_groups} groups via same postcode + first word")
+
+        # Clean up temp columns
+        df = df.drop(columns=["_first_word", "_postcode_firstword"], errors="ignore")
+
+    # =========================================================================
+    # Method 0c: Same postcode only (for unprocessed companies)
+    # This catches holding + operating company pairs at the same address
+    # where names are completely different (e.g., "Kirklands Care" + "Emscott Holdings")
+    # Also merges ungrouped companies into existing groups at the same address
+    # =========================================================================
+    if has_address:
+        logger.info("  Method 0c: Checking for same postcode (ungrouped companies)...")
+
+        method_0c_groups = 0
+        method_0c_merges = 0
+
+        # Get all postcodes that have at least one unprocessed company
+        unprocessed_mask = ~df.index.isin(processed_indices)
+        postcodes_with_unprocessed = df.loc[unprocessed_mask, "_postcode"].dropna().unique()
+
+        for postcode in postcodes_with_unprocessed:
+            mask = (df["_postcode"] == postcode)
+            indices = df[mask].index.tolist()
+
+            if len(indices) < 2:
+                continue
+
+            # Split into processed and unprocessed at this postcode
+            processed_at_postcode = [idx for idx in indices if idx in processed_indices]
+            unprocessed_at_postcode = [idx for idx in indices if idx not in processed_indices]
+
+            if len(unprocessed_at_postcode) == 0:
+                continue
+
+            # Case 1: There's already a group at this postcode - merge into it
+            if len(processed_at_postcode) > 0:
+                # Find the existing group ID from processed companies
+                existing_group_id = None
+                existing_primary_idx = None
+                for idx in processed_at_postcode:
+                    gid = df.loc[idx, "duplicate_group_id"]
+                    if pd.notna(gid):
+                        existing_group_id = gid
+                        # Check if this is the primary
+                        if df.loc[idx, "is_group_primary"]:
+                            existing_primary_idx = idx
+                        break
+
+                if existing_group_id is not None:
+                    # Merge unprocessed companies into existing group
+                    for idx in unprocessed_at_postcode:
+                        df.loc[idx, "duplicate_group_id"] = existing_group_id
+                        df.loc[idx, "group_reason"] = "same_postcode_merged"
+                        df.loc[idx, "is_group_primary"] = False
+                        processed_indices.add(idx)
+                        method_0c_merges += 1
+                    continue
+
+            # Case 2: Multiple unprocessed companies at same postcode - create new group
+            if len(unprocessed_at_postcode) >= 2:
+                group_counter += 1
+                method_0c_groups += 1
+
+                # Primary = most employees, non-holding name preferred
+                cluster_df = df.loc[unprocessed_at_postcode].copy()
+                cluster_df["_has_holding_name"] = cluster_df["company_name"].apply(has_holding_name_pattern)
+                cluster_df = cluster_df.sort_values(
+                    ["_has_holding_name", "employees"],
+                    ascending=[True, False],
+                    na_position="last"
+                )
+                primary_idx = cluster_df.index[0]
+
+                for idx in unprocessed_at_postcode:
+                    df.loc[idx, "duplicate_group_id"] = group_counter
+                    df.loc[idx, "group_reason"] = "same_postcode"
+                    if idx != primary_idx:
+                        df.loc[idx, "is_group_primary"] = False
+                    processed_indices.add(idx)
+
+            # Case 3: Single unprocessed company at postcode with processed non-grouped companies
+            # (This shouldn't happen often, but handle it gracefully)
+            elif len(unprocessed_at_postcode) == 1 and len(processed_at_postcode) > 0:
+                # Check if any processed company at this postcode has no group
+                processed_without_group = [
+                    idx for idx in processed_at_postcode
+                    if pd.isna(df.loc[idx, "duplicate_group_id"])
+                ]
+                if len(processed_without_group) > 0:
+                    # Create a new group for all of them
+                    group_counter += 1
+                    method_0c_groups += 1
+
+                    all_at_postcode = processed_without_group + unprocessed_at_postcode
+                    cluster_df = df.loc[all_at_postcode].copy()
+                    cluster_df["_has_holding_name"] = cluster_df["company_name"].apply(has_holding_name_pattern)
+                    cluster_df = cluster_df.sort_values(
+                        ["_has_holding_name", "employees"],
+                        ascending=[True, False],
+                        na_position="last"
+                    )
+                    primary_idx = cluster_df.index[0]
+
+                    for idx in all_at_postcode:
+                        df.loc[idx, "duplicate_group_id"] = group_counter
+                        df.loc[idx, "group_reason"] = "same_postcode"
+                        if idx != primary_idx:
+                            df.loc[idx, "is_group_primary"] = False
+                        processed_indices.add(idx)
+
+        if method_0c_groups > 0:
+            logger.info(f"    Found {method_0c_groups} new groups via same postcode")
+        if method_0c_merges > 0:
+            logger.info(f"    Merged {method_0c_merges} companies into existing groups via same postcode")
 
     # =========================================================================
     # Method 1: Identical financials (turnover + balance sheet)
