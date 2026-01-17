@@ -87,6 +87,118 @@ HOLDING_PATTERNS = [
 
 HOLDING_PATTERN_RE = re.compile('|'.join(HOLDING_PATTERNS), re.IGNORECASE)
 
+# SIC code to sector mapping
+SIC_TO_SECTOR = {
+    # Primary industries
+    (1, 3): "Agriculture",
+    (5, 9): "Mining/Quarrying",
+    # Manufacturing
+    (10, 10): "Food Manufacturing",
+    (11, 11): "Beverages",
+    (13, 15): "Textiles/Clothing",
+    (16, 16): "Wood Products",
+    (17, 18): "Paper/Printing",
+    (19, 19): "Oil/Fuel",
+    (20, 20): "Chemicals",
+    (21, 21): "Pharmaceuticals",
+    (22, 22): "Plastics/Rubber",
+    (23, 23): "Building Materials",
+    (24, 24): "Metals",
+    (25, 25): "Metal Products",
+    (26, 26): "Electronics",
+    (27, 27): "Electrical Equipment",
+    (28, 28): "Machinery/Equipment",
+    (29, 29): "Motor Vehicles",
+    (30, 30): "Transport Equipment",
+    (31, 32): "Furniture/Manufacturing",
+    (33, 33): "Repair/Installation",
+    # Utilities
+    (35, 35): "Energy/Utilities",
+    (36, 39): "Water/Waste",
+    # Construction
+    (41, 41): "Construction",
+    (42, 42): "Civil Engineering",
+    (43, 43): "Specialist Construction",
+    # Trade
+    (45, 45): "Motor Trade",
+    (46, 46): "Wholesale",
+    (47, 47): "Retail",
+    # Transport
+    (49, 49): "Road Transport",
+    (50, 50): "Water Transport",
+    (51, 51): "Air Transport",
+    (52, 52): "Warehousing/Logistics",
+    (53, 53): "Postal/Courier",
+    # Hospitality
+    (55, 55): "Hotels/Accommodation",
+    (56, 56): "Food Service",
+    # Information/Comms
+    (58, 60): "Media/Publishing",
+    (61, 61): "Telecommunications",
+    (62, 63): "IT/Software",
+    # Financial
+    (64, 64): "Financial Services",
+    (65, 65): "Insurance",
+    (66, 66): "Financial Support",
+    # Property
+    (68, 68): "Real Estate",
+    # Professional
+    (69, 69): "Legal/Accounting",
+    (70, 70): "Head Office/Management",
+    (71, 71): "Engineering/Architecture",
+    (72, 72): "R&D",
+    (73, 73): "Advertising/Marketing",
+    (74, 74): "Professional Services",
+    (75, 75): "Veterinary",
+    # Admin/Support
+    (77, 77): "Rental/Leasing",
+    (78, 78): "Recruitment/Staffing",
+    (79, 79): "Travel/Tourism",
+    (80, 80): "Security Services",
+    (81, 81): "Facilities/Cleaning",
+    (82, 82): "Business Support",
+    # Public
+    (84, 84): "Public Administration",
+    (85, 85): "Education",
+    (86, 86): "Healthcare",
+    (87, 87): "Care Homes",
+    (88, 88): "Social Care",
+    # Other
+    (90, 93): "Arts/Entertainment",
+    (94, 94): "Membership Organisations",
+    (95, 95): "Repair Services",
+    (96, 96): "Personal Services",
+}
+
+
+def map_sic_to_sector(sic_codes: Optional[str]) -> str:
+    """
+    Map SIC code(s) to a human-readable sector name.
+
+    Takes the primary SIC code (first in list) and maps to sector.
+    Returns 'Business Services' as default if no match.
+    """
+    if not sic_codes or pd.isna(sic_codes):
+        return "Business Services"
+
+    # Take first SIC code (primary)
+    primary_sic = str(sic_codes).split(';')[0].strip()
+
+    if not primary_sic or len(primary_sic) < 2:
+        return "Business Services"
+
+    try:
+        sic_prefix = int(primary_sic[:2])
+    except ValueError:
+        return "Business Services"
+
+    # Find matching sector
+    for (start, end), sector in SIC_TO_SECTOR.items():
+        if start <= sic_prefix <= end:
+            return sector
+
+    return "Business Services"
+
 
 def is_bad_status(status: Optional[str]) -> bool:
     """Check if company status indicates inactive/problematic."""
@@ -694,6 +806,9 @@ def enrich_with_profile_data(
     df["registered_address"] = addresses
     df["sic_codes"] = sic_codes_list
 
+    # Derive sector from SIC codes
+    df["sector"] = df["sic_codes"].apply(map_sic_to_sector)
+
     logger.info(f"API requests made: {client.request_count:,}")
 
     return df
@@ -722,6 +837,10 @@ def apply_hygiene_filters(
     if not skip_enrichment and "company_status" not in df.columns:
         client = CompaniesHouseClient()
         df = enrich_with_profile_data(df, client)
+
+    # If sic_codes exists but sector doesn't, derive it
+    if "sic_codes" in df.columns and "sector" not in df.columns:
+        df["sector"] = df["sic_codes"].apply(map_sic_to_sector)
 
     filter_stats = {}
 
@@ -843,6 +962,13 @@ def apply_hygiene_filters(
         holding_leads = df["has_holding_name"].sum()
         logger.info(f"  - Clean operational leads: {clean_leads:,}")
         logger.info(f"  - Holding/investment pattern leads: {holding_leads:,}")
+
+    # Log sector distribution
+    if "sector" in df.columns:
+        logger.info("Sector distribution:")
+        sector_counts = df["sector"].value_counts().head(10)
+        for sector, count in sector_counts.items():
+            logger.info(f"  - {sector}: {count:,}")
 
     return len(df)
 

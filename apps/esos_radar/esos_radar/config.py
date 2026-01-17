@@ -50,6 +50,11 @@ VERIFIED_GAPS = PROCESSED_DIR / "verified_gaps.csv"
 # Stage 5: Final Tier A+ leads
 TIER_A_PLUS_LEADS = PROCESSED_DIR / "tier_a_plus_leads.csv"
 
+# Stage 6: Contact enrichment
+ENRICHED_LEADS = PROCESSED_DIR / "enriched_leads.csv"
+NEVERBOUNCE_INPUT = PROCESSED_DIR / "neverbounce_input.csv"
+FINAL_LEADS = PROCESSED_DIR / "final_leads.csv"
+
 # Daily work list outputs
 DAILY_WORK_LIST = PROCESSED_DIR / "daily_work_list.csv"
 WORKED_LEADS = PROCESSED_DIR / "worked_leads.csv"

@@ -137,6 +137,11 @@ class CompaniesHouseClient:
         endpoint = f"/company/{company_number}"
         return self._get(endpoint)
 
+    # Alias for compatibility
+    def get_company(self, company_number: str) -> Dict[str, Any]:
+        """Alias for get_company_profile()."""
+        return self.get_company_profile(company_number)
+
     def get_pscs(self, company_number: str) -> List[Dict[str, Any]]:
         """
         Fetch Persons with Significant Control for a company.
@@ -153,6 +158,24 @@ class CompaniesHouseClient:
         result = self._get(endpoint)
 
         # PSC endpoint returns {"items": [...], "total_results": N, ...}
+        return result.get("items", [])
+
+    def get_officers(self, company_number: str) -> List[Dict[str, Any]]:
+        """
+        Fetch officers (directors, secretaries) for a company.
+
+        GET /company/{company_number}/officers
+
+        Args:
+            company_number: 8-character company registration number
+
+        Returns:
+            List of officer records (may be empty)
+        """
+        endpoint = f"/company/{company_number}/officers"
+        result = self._get(endpoint)
+
+        # Officers endpoint returns {"items": [...], "total_results": N, ...}
         return result.get("items", [])
 
     def get_corporate_pscs(self, company_number: str) -> List[Dict[str, Any]]:
