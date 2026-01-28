@@ -29,7 +29,8 @@ from typing import Optional, Set
 
 import pandas as pd
 
-from radar_intel_core.clients.ch_client import CompaniesHouseClient
+ # from radar_intel_core.clients.ch_client import CompaniesHouseClient
+from radar_intel_core.clients.ch_cache import CachedCompaniesHouseClient
 from radar_intel_core.esos.notifications import load_exclusion_set
 
 
@@ -48,7 +49,7 @@ BATCH_DELAY_SECONDS = 30
 
 def check_parent_coverage(
     company_number: str,
-    client: CompaniesHouseClient,
+    client: CachedCompaniesHouseClient,
     exclusion_set: Set[str],
 ) -> tuple[bool, Optional[str], Optional[str]]:
     """
@@ -123,7 +124,7 @@ def check_all_parents(
         df["covering_parent_number"] = None
         df["covering_parent_name"] = None
     else:
-        client = CompaniesHouseClient()
+        client = CachedCompaniesHouseClient()
         
         parent_covered = []
         covering_parent_numbers = []
